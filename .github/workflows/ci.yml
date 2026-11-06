@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install bubblewrap (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Lint, typecheck and test
+        run: bun run ci
+        env:
+          SANDBOX_REQUIRE_BWRAP: ${{ runner.os == 'Linux' && '1' || '0' }}
+          SANDBOX_REQUIRE_SANDBOX_EXEC: ${{ runner.os == 'macOS' && '1' || '0' }}
+          SANDBOX_TEST_INTERNET: "1"

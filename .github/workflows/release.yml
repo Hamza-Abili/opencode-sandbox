@@ -1,0 +1,76 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install bubblewrap (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Lint, typecheck and test
+        run: bun run ci
+        env:
+          SANDBOX_REQUIRE_BWRAP: ${{ runner.os == 'Linux' && '1' || '0' }}
+          SANDBOX_REQUIRE_SANDBOX_EXEC: ${{ runner.os == 'macOS' && '1' || '0' }}
+          SANDBOX_TEST_INTERNET: "1"
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Tag must match package version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package version v$version" >&2
+            exit 1
+          fi
+
+      - name: GitHub release
+        run: gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN secret is not set - skipping npm publish"
+            exit 0
+          fi
+          version=$(npm pkg get version | tr -d '"')
+          name=$(npm pkg get name | tr -d '"')
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "::notice::$version is already published - skipping npm publish"
+            exit 0
+          fi
+          npm publish --access public
