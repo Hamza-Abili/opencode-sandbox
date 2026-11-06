@@ -16,7 +16,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const PLUGIN_ROOT = path.resolve(import.meta.dir, "..");
+const PLUGIN_ROOT = process.env.PLUGIN_SPEC ?? path.resolve(import.meta.dir, "..");
 const OPENCODE = process.env.OPENCODE_BIN ?? "opencode";
 const password = crypto.randomUUID();
 const port = 49700 + (process.pid % 200);
