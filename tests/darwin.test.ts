@@ -91,6 +91,7 @@ describe("buildDarwinProfile", () => {
         "com.apple.networkd",
         "com.apple.SystemConfiguration.DNSConfiguration",
         "com.apple.dnssd.service",
+        "com.apple.TrustEvaluationAgent",
         "com.apple.trustd.agent",
       ]) {
         expect(profile).toContain(service);

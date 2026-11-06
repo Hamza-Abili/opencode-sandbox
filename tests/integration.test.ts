@@ -248,6 +248,7 @@ describe("real sandbox integration", () => {
           "/usr/bin/curl -sS --max-time 10 -o /dev/null -w '%{http_code}' https://example.com"
         );
       }
+      if (result.code !== 0) console.error(`macOS HTTPS probe failed: ${result.stderr}`);
       expect(result.code).toBe(0);
       expect(result.stdout.trim()).toBe("200");
     } finally {

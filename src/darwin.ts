@@ -166,6 +166,7 @@ export function buildDarwinProfile(input: DarwinProfileInput): string {
       '  (global-name "com.apple.SystemConfiguration.configd")',
       '  (global-name "com.apple.SystemConfiguration.DNSConfiguration")',
       '  (global-name "com.apple.dnssd.service")',
+      '  (global-name "com.apple.TrustEvaluationAgent")',
       '  (global-name "com.apple.trustd")',
       '  (global-name "com.apple.trustd.agent")',
       ")",
