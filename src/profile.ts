@@ -13,6 +13,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { mountPlan } from "./mounts.ts";
 import { ENV_ALLOWLIST, type LinuxProfileInput, RESERVED_ENV } from "./types.ts";
 
 const SYSTEM_PATHS = [
@@ -148,9 +149,12 @@ export function buildLinuxProfile(input: LinuxProfileInput): string[] {
     args.push("--dir", `/home/sandbox/${dir}`);
   }
 
-  args.push("--bind", layout.workspace, layout.workspace);
-  for (const target of layout.writablePaths) args.push("--bind", target, target);
-  for (const target of layout.readablePaths) args.push("--ro-bind", target, target);
+  // Broad to narrow: a later bind shadows an earlier one, so a more specific
+  // writable path wins over a broader readable parent and a more specific
+  // readable subdirectory overrides the writable workspace.
+  for (const mount of mountPlan(layout)) {
+    args.push(mount.mode === "rw" ? "--bind" : "--ro-bind", mount.path, mount.path);
+  }
 
   const roots = [
     ...SYSTEM_PATHS,

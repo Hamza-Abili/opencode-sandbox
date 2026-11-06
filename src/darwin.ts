@@ -2,18 +2,21 @@
  * opencode-sandbox — macOS Seatbelt profile builder (pure).
  *
  * Native `sandbox-exec`, zero dependencies. The profile starts from deny
- * default: processes may exec, read the system runtime, the workspace and the
- * explicitly allowed paths, but write only inside the workspace, a synthetic
- * home and the OS temp dirs. The host home is not readable, so `~/.ssh`,
- * `~/.aws` and OpenCode's own credentials are outside the boundary.
+ * default: processes may exec and read the system runtime, the workspace, the
+ * synthetic home and explicit paths. Writes are broad-to-narrow per-path
+ * rules: the workspace, synthetic home and temp dirs are writable, while
+ * explicit readable paths get a `deny file-write*` rule. The host home is not
+ * readable, so `~/.ssh`, `~/.aws` and OpenCode's own credentials are outside
+ * the boundary.
  *
- * Seatbelt is the last matching rule wins, so allow rules are grouped before
- * the final deny-sensitive layer (none is needed: the host home is simply not
- * in the allowlist).
+ * Seatbelt is last matching rule wins: write rules are sorted by depth so a
+ * more specific readable subdirectory overrides a broader writable mount, and
+ * a more specific writable child re-allows its own subtree.
  */
 
 import fs from "node:fs";
 import path from "node:path";
+import { type MountMode, mountPlan, pathDepth } from "./mounts.ts";
 import { sandboxPath } from "./profile.ts";
 import { type DarwinProfileInput, ENV_ALLOWLIST, RESERVED_ENV } from "./types.ts";
 
@@ -74,6 +77,13 @@ function addPath(set: Set<string>, target: string): void {
   } catch {
     // keep the alias only
   }
+  // resolveLayout returns canonical /private/... paths; a process may still
+  // use the /var, /tmp or /etc alias, which Seatbelt treats as a different
+  // string. Add the alias too when it exists.
+  if (target.startsWith("/private/")) {
+    const alias = target.slice("/private".length);
+    if (existing(alias)) set.add(alias);
+  }
 }
 
 function readRoots(input: DarwinProfileInput): string[] {
@@ -81,23 +91,72 @@ function readRoots(input: DarwinProfileInput): string[] {
   for (const target of DARWIN_SYSTEM_READ) addPath(roots, target);
   addPath(roots, input.layout.workspace);
   addPath(roots, input.home);
+  // A writable path is read-write on Linux; keep the same semantics here.
+  for (const target of input.layout.writablePaths) addPath(roots, target);
   for (const target of input.layout.readablePaths) addPath(roots, target);
   return [...roots];
 }
 
-function writeRoots(input: DarwinProfileInput): string[] {
-  const roots = new Set<string>();
-  addPath(roots, input.layout.workspace);
-  addPath(roots, input.home);
-  addPath(roots, "/tmp");
-  addPath(roots, "/var/folders");
-  for (const target of input.layout.writablePaths) addPath(roots, target);
-  return [...roots];
+interface WriteRule {
+  path: string;
+  mode: MountMode;
+  priority: number;
+}
+
+/**
+ * Add a path and its canonical target. Seatbelt matches strings, so both the
+ * alias and the real path need a rule. A user mount (priority 1) overrides a
+ * default home/temp write root (priority 0) for the same path.
+ */
+function addWriteRule(
+  rules: Map<string, WriteRule>,
+  target: string,
+  mode: MountMode,
+  priority: number
+): void {
+  if (!existing(target)) return;
+  const candidates = [target];
+  try {
+    const real = fs.realpathSync.native(target);
+    if (real !== target) candidates.push(real);
+  } catch {
+    // keep the literal path only
+  }
+  if (target.startsWith("/private/")) {
+    const alias = target.slice("/private".length);
+    if (existing(alias)) candidates.push(alias);
+  }
+  for (const candidate of candidates) {
+    const previous = rules.get(candidate);
+    if (previous === undefined || priority >= previous.priority) {
+      rules.set(candidate, { path: candidate, mode, priority });
+    }
+  }
+}
+
+/**
+ * Write rules in broad-to-narrow order. Seatbelt is last-match-wins, so a
+ * readable subdirectory denies writes after the writable workspace allows
+ * them, while a writable child of a readable parent re-allows its own subtree.
+ */
+function writeRules(input: DarwinProfileInput): WriteRule[] {
+  const rules = new Map<string, WriteRule>();
+  addWriteRule(rules, input.home, "rw", 0);
+  for (const target of ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]) {
+    addWriteRule(rules, target, "rw", 0);
+  }
+  for (const mount of mountPlan(input.layout)) {
+    addWriteRule(rules, mount.path, mount.mode, 1);
+  }
+  return [...rules.values()].sort(
+    (left, right) =>
+      pathDepth(left.path) - pathDepth(right.path) || left.path.localeCompare(right.path)
+  );
 }
 
 export function buildDarwinProfile(input: DarwinProfileInput): string {
   const reads = readRoots(input);
-  const writes = writeRoots(input);
+  const writes = writeRules(input);
   const rules: string[] = [
     "(version 1)",
     "(deny default)",
@@ -148,8 +207,10 @@ export function buildDarwinProfile(input: DarwinProfileInput): string {
     `(allow file-read* (literal "/"))`,
     `(allow file-read* ${reads.map(subpath).join(" ")})`,
     "",
-    "; Writes are restricted to the workspace, the synthetic home and temp",
-    `(allow file-write* ${writes.map(subpath).join(" ")})`,
+    "; Writes: broad to narrow; the last matching rule wins",
+    ...writes.map(
+      (rule) => `(${rule.mode === "rw" ? "allow" : "deny"} file-write* ${subpath(rule.path)})`
+    ),
     `(allow file-write* ${DEV_WRITE.filter(existing)
       .map((item) => `(literal ${literal(item)})`)
       .join(" ")})`,
@@ -186,6 +247,7 @@ export function darwinEnvironment(input: DarwinProfileInput): Record<string, str
       ...DARWIN_SYSTEM_READ,
       input.layout.workspace,
       input.home,
+      ...input.layout.writablePaths,
       ...input.layout.readablePaths,
     ]),
     SHELL: input.shell,

@@ -282,6 +282,41 @@ describe("real sandbox integration", () => {
     }
   });
 
+  test("enforces readable and writable mount precedence", async () => {
+    if (!runnable) return;
+    const parent = outsideDir("osb-precedence-");
+    const workspace = path.join(parent, "ws");
+    const vendor = path.join(workspace, "vendor");
+    const cache = path.join(parent, "cache");
+    fs.mkdirSync(workspace);
+    fs.mkdirSync(vendor);
+    fs.mkdirSync(cache);
+    const { app, run } = await sandbox(workspace, {
+      writablePaths: [cache],
+      readablePaths: [parent, vendor],
+    });
+    try {
+      const writable = await run("printf ok > ws.txt");
+      expect(writable.code).toBe(0);
+      expect(fs.existsSync(path.join(workspace, "ws.txt"))).toBe(true);
+
+      const readOnlyChild = await run("printf nope > vendor.txt", vendor);
+      expect(readOnlyChild.code).not.toBe(0);
+      expect(fs.existsSync(path.join(vendor, "vendor.txt"))).toBe(false);
+
+      const writableChild = await run("printf ok > cache.txt", cache);
+      expect(writableChild.code).toBe(0);
+      expect(fs.existsSync(path.join(cache, "cache.txt"))).toBe(true);
+
+      const readOnlyParent = await run("printf nope > parent.txt", parent);
+      expect(readOnlyParent.code).not.toBe(0);
+      expect(fs.existsSync(path.join(parent, "parent.txt"))).toBe(false);
+    } finally {
+      app.dispose();
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   test("honours a working directory inside the workspace", async () => {
     if (!runnable) return;
     const workspace = tempDir();

@@ -19,9 +19,24 @@ The product **is** the boundary. Treat every claim here as load-bearing.
   directory, not `/`, not the host home, not an ancestor of the host home and
   not a host system or credential directory. Extra mounts must exist, are
   canonicalised, and may not be `/`, the host home, an ancestor of it, a
-  credential directory or a host system path when writable.
-- **Fail-closed.** A real sandbox is probed at startup. If the binary, probe,
-  layout or hook registration fails, shell commands are refused
+  credential directory or a host system path when writable. Protected system
+  roots include `/run` and `/var` subtrees; `/tmp`, `/var/tmp`,
+  `/private/var/tmp`, `/var/folders`, `/private/var/folders` and `/var/www` are
+  the explicit writable exceptions. `/var/www` is only a convenience
+  exception: do not grant it if a host web server executes files from that
+  tree, because a writable document root is host code execution outside the
+  sandbox. Credential directories include `~/.ssh`, cloud stores, OpenCode's
+  XDG stores and `~/Library/Application Support/opencode` on macOS. The same
+  path cannot be both writable and readable; the workspace is always writable.
+- **Mount precedence.** Mounts are applied from broad to narrow; a more
+  specific path wins. A readable subdirectory is read-only even inside the
+  workspace, while a readable ancestor does not make the workspace or a more
+  specific writable child read-only. Contradictory configurations (the same
+  path in both lists, or the workspace as readable) are rejected at setup. The
+  same plan drives Linux bind order and the macOS last-matching Seatbelt rule.
+- **Fail-closed.** A real sandbox is probed at startup, then the generated
+  wrapper is executed with `-c 'exit 42'`. If the binary, generated profile,
+  mount, shell, layout or hook registration fails, shell commands are refused
   (`mode: "enforce"`). A shell hook also covers the TUI terminal; the tool-hook
   fallback blocks every agent shell call. If the host exposes no hook surface
   at all, setup fails loudly. `mode: "permissive"` is an explicit opt-out that
@@ -56,8 +71,14 @@ covered by the tool hook.
 
 - Only the **shell service** is sandboxed. File tools (`read`, `write`, `edit`,
   `patch`), MCP servers, LSP servers, formatters, `webfetch`/`websearch`,
-  subagents and the V1 terminal shell are outside the boundary. OpenCode's
-  permission system remains the control for those tools.
+  subagents' non-shell tools and the V1 terminal shell are outside the
+  boundary. Shell commands run by a subagent still go through the same shell
+  service and are sandboxed. OpenCode's permission system remains the control
+  for the other tools.
+- Do not run OpenCode as root. The workspace and credential guard is scoped to
+  the home of the user running OpenCode and the listed system roots; a
+  root-run process broadens what is readable and writable, including other
+  users' homes.
 - bwrap and Seatbelt share the host kernel: this is isolation, not
   virtualization. A kernel exploit is out of scope.
 - Linux mounts `/etc` read-only. World-readable files there (and the workspace

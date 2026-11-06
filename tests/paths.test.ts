@@ -132,11 +132,57 @@ describe("resolveLayout", () => {
     });
   });
 
+  test("rejects sensitive /var and /run roots", () => {
+    let checked = 0;
+    for (const target of ["/var/log", "/var/lib", "/run", "/private/var/log"]) {
+      if (!fs.existsSync(target)) continue;
+      checked += 1;
+      expect(() => resolveLayout(target, { writablePaths: [], readablePaths: [] })).toThrow(
+        /system path/
+      );
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  test("keeps explicit temp roots writable under a denied parent", () => {
+    if (!fs.existsSync("/var/tmp")) return;
+    const resolved = fs.realpathSync.native("/var/tmp");
+    const layout = resolveLayout("/var/tmp", { writablePaths: [], readablePaths: [] });
+    expect(layout.workspace).toBe(resolved);
+  });
+
+  test("rejects conflicting writable and readable mounts", () => {
+    withDir((workspace) => {
+      const shared = tempDir("osb-shared-");
+      try {
+        expect(() =>
+          resolveLayout(workspace, { writablePaths: [shared], readablePaths: [shared] })
+        ).toThrow(/both writable and readable/);
+      } finally {
+        fs.rmSync(shared, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test("rejects the workspace as a readable path", () => {
+    withDir((workspace) => {
+      expect(() =>
+        resolveLayout(workspace, { writablePaths: [], readablePaths: [workspace] })
+      ).toThrow(/workspace cannot be listed as a readable path/);
+    });
+  });
+
   test("rejects credential directories as workspace or writable mount", () => {
     const home = tempDir("osb-home-");
     const workspace = path.join(home, "project");
     fs.mkdirSync(workspace);
-    const sensitive = [".ssh", ".aws", ".local/state/opencode", ".config/opencode"];
+    const sensitive = [
+      ".ssh",
+      ".aws",
+      ".local/state/opencode",
+      ".config/opencode",
+      "Library/Application Support/opencode",
+    ];
     for (const relative of sensitive) {
       fs.mkdirSync(path.join(home, relative), { recursive: true });
     }

@@ -36,19 +36,30 @@ const DARWIN_PROBE = [
   "(allow mach-lookup)",
 ].join("\n");
 
-async function run(
+export interface ProcessOptions {
+  timeoutMs?: number;
+  cwd?: string;
+}
+
+/** Run a trusted absolute binary and capture its exit code and stderr. */
+export async function runProcess(
   binary: string,
   args: string[],
-  timeoutMs: number
+  options: ProcessOptions = {}
 ): Promise<{ code: number; stderr: string }> {
-  const child = Bun.spawn({ cmd: [binary, ...args], stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn({
+    cmd: [binary, ...args],
+    cwd: options.cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const timer = setTimeout(() => {
     try {
       child.kill();
     } catch {
       // already exited
     }
-  }, timeoutMs);
+  }, options.timeoutMs ?? 5000);
   try {
     const code = await child.exited;
     const stderr = (await new Response(child.stderr).text()).trim();
@@ -66,7 +77,7 @@ export async function probe(
   const args =
     platform === "linux" ? BWRAP_PROBE : ["-p", DARWIN_PROBE, "/bin/sh", "-c", "exit 42"];
   try {
-    const result = await run(binary, args, timeoutMs);
+    const result = await runProcess(binary, args, { timeoutMs });
     if (result.code === 42) return { available: true };
     return {
       available: false,

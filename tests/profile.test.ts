@@ -33,6 +33,10 @@ function expectBind(args: string[], flag: string, target: string): void {
   expect(args[index - 1]).toBe(flag);
 }
 
+function mountIndex(args: string[], flag: string, target: string): number {
+  return args.findIndex((value, index) => value === flag && args[index + 1] === target);
+}
+
 describe("buildLinuxProfile", () => {
   test("starts from an isolated, capability-free namespace", () => {
     const dir = tempDir();
@@ -72,6 +76,60 @@ describe("buildLinuxProfile", () => {
       fs.rmSync(dir, { recursive: true, force: true });
       fs.rmSync(writable, { recursive: true, force: true });
       fs.rmSync(readable, { recursive: true, force: true });
+    }
+  });
+
+  test("a readable parent does not shadow the workspace", () => {
+    const parent = tempDir();
+    const workspace = path.join(parent, "ws");
+    fs.mkdirSync(workspace);
+    try {
+      const args = profileFor(workspace, {}, { readablePaths: [parent] });
+      const readable = mountIndex(args, "--ro-bind", parent);
+      const writable = mountIndex(args, "--bind", workspace);
+      expect(readable).toBeGreaterThan(0);
+      expect(writable).toBeGreaterThan(readable);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  test("a readable subdirectory is mounted after the workspace", () => {
+    const workspace = tempDir();
+    const vendor = path.join(workspace, "vendor");
+    fs.mkdirSync(vendor);
+    try {
+      const args = profileFor(workspace, {}, { readablePaths: [vendor] });
+      const writable = mountIndex(args, "--bind", workspace);
+      const readable = mountIndex(args, "--ro-bind", vendor);
+      expect(writable).toBeGreaterThan(0);
+      expect(readable).toBeGreaterThan(writable);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("a writable subdirectory wins over a readable parent", () => {
+    const parent = tempDir();
+    const workspace = path.join(parent, "ws");
+    const cache = path.join(parent, "cache");
+    fs.mkdirSync(workspace);
+    fs.mkdirSync(cache);
+    try {
+      const args = profileFor(
+        workspace,
+        {},
+        {
+          writablePaths: [cache],
+          readablePaths: [parent],
+        }
+      );
+      const readable = mountIndex(args, "--ro-bind", parent);
+      const writable = mountIndex(args, "--bind", cache);
+      expect(readable).toBeGreaterThan(0);
+      expect(writable).toBeGreaterThan(readable);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
     }
   });
 

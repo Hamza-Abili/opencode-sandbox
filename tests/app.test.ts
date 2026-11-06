@@ -174,6 +174,30 @@ describe("createSandbox", () => {
     }
   });
 
+  test("fails closed when the generated wrapper cannot run", async () => {
+    const workspace = tempDir();
+    const fake = fakeShell();
+    const app = await createSandbox(
+      { location: { directory: workspace }, ...fake.context },
+      options(workspace, { shell: "/definitely/not/a/shell" })
+    );
+    try {
+      const callback = fake.get();
+      expect(callback).toBeDefined();
+      const event: ShellCreateEvent = {
+        command: "true",
+        cwd: workspace,
+        timeout: 0,
+        shell: "/bin/bash",
+        env: {},
+      };
+      expect(() => callback?.(event)).toThrow(/refusing to run/);
+    } finally {
+      app.dispose();
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("throws when no hook surface can enforce the refusal", async () => {
     const home = os.homedir();
     await expect(createSandbox({ location: { directory: home } }, options(home))).rejects.toThrow(

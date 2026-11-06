@@ -53,6 +53,7 @@ const SENSITIVE_HOME_PATHS = [
   ".config/opencode",
   ".local/share/opencode",
   ".local/state/opencode",
+  "Library/Application Support/opencode",
   ".npmrc",
   ".netrc",
   ".git-credentials",
@@ -60,13 +61,12 @@ const SENSITIVE_HOME_PATHS = [
 ];
 
 /**
- * Host paths that must never be writable, whether as the workspace or as an
- * extra mount. A writable `/etc`, `/usr/local` or `/nix/store` is host
- * compromise, not project sandboxing; read-only access remains available.
+ * Host filesystem roots that must never be writable, whether as the workspace
+ * or as an extra mount. A writable `/etc`, `/usr/local`, `/run` or `/nix/store`
+ * is host compromise, not project sandboxing; read-only access remains
+ * available through `readablePaths`.
  */
-const SYSTEM_WRITE_EXACT = new Set(["/var", "/private", "/private/var"]);
-
-const SYSTEM_WRITE_DENY = [
+const SYSTEM_WRITE_ROOTS = [
   "/etc",
   "/usr",
   "/bin",
@@ -78,22 +78,36 @@ const SYSTEM_WRITE_DENY = [
   "/dev",
   "/proc",
   "/sys",
+  "/run",
+  "/var",
   "/System",
   "/Library",
   "/Applications",
-  "/private/etc",
-  "/private/var/db",
-  "/private/var/run",
+  "/private",
   "/nix/store",
   "/opt",
   "/usr/local",
 ];
 
+/**
+ * Explicit exceptions under the roots above: temp directories and the common
+ * web document root. `/var/tmp` and `/tmp` are normal project/scratch
+ * locations; `/var/lib`, `/var/log`, `/var/spool`, `/run` and the rest stay
+ * protected by their parent roots.
+ */
+const SYSTEM_WRITE_ALLOW = [
+  "/var/tmp",
+  "/private/var/tmp",
+  "/var/folders",
+  "/private/var/folders",
+  "/var/www",
+  "/private/var/www",
+  "/private/tmp",
+];
+
 function rejectSystemWritable(target: string, label: string): void {
-  if (SYSTEM_WRITE_EXACT.has(target)) {
-    throw new Error(`${label} ${target} is a host system path; it cannot be writable`);
-  }
-  for (const system of SYSTEM_WRITE_DENY) {
+  if (SYSTEM_WRITE_ALLOW.some((allowed) => contains(allowed, target))) return;
+  for (const system of SYSTEM_WRITE_ROOTS) {
     if (contains(system, target) || contains(target, system)) {
       throw new Error(`${label} ${target} is a host system path; it cannot be writable`);
     }
@@ -312,6 +326,15 @@ export function resolveLayout(
   for (const item of options.readablePaths) {
     const resolved = validateMount(item, homes, "readable path", false);
     readable.add(resolved);
+  }
+
+  if (readable.has(root)) {
+    throw new Error("the workspace cannot be listed as a readable path; it is always writable");
+  }
+  for (const target of readable) {
+    if (writable.has(target)) {
+      throw new Error(`path ${target} is both writable and readable; choose one`);
+    }
   }
 
   return {

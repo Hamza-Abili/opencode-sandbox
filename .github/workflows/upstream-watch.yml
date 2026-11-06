@@ -1,0 +1,97 @@
+name: upstream-watch
+
+# Self-maintenance loop: when a new OpenCode release lands, flag it for
+# compatibility review instead of silently drifting. Deterministic: only
+# opens an issue, never edits code or publishes.
+#
+# Note on the upstream version source: OpenCode publishes tags for both the
+# v1 and v2 lines (and GitHub releases for current v2 versions). Reading tags
+# covers both lines and does not depend on a release being present.
+
+on:
+  schedule:
+    - cron: "30 4 * * 1" # Mondays 04:30 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Detect new OpenCode release
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The version this plugin was last contract-checked against lives in the README.
+          tested=$(grep -oE "tested on [0-9]+\.[0-9]+\.[0-9]+;" README.md | head -1 | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" || true)
+          # Newest plain semver tag across both v1 and v2 lines.
+          latest=$(gh api 'repos/anomalyco/opencode/tags?per_page=100' --paginate --jq '.[].name' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | sed 's/^v//')
+          echo "tested=${tested:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+          if [ -z "$tested" ]; then
+            echo "::error::README 'tested on X.Y.Z' anchor not found; the watchdog cannot work until it is restored"
+            exit 1
+          elif [ "$tested" = "$latest" ]; then
+            echo "match=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "match=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check for an existing open issue about this release
+        id: existing
+        if: steps.detect.outputs.match == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          count=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "OpenCode v${{ steps.detect.outputs.latest }} in:title" --json number --jq length)
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure the label exists
+        if: steps.detect.outputs.match == 'false' && steps.existing.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create github_actions --repo "$GITHUB_REPOSITORY" \
+            --color "0E8A16" --description "Opened by a GitHub Actions workflow" 2>/dev/null || true
+
+      - name: Open compatibility review issue
+        if: steps.detect.outputs.match == 'false' && steps.existing.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest="v${{ steps.detect.outputs.latest }}"
+          notes=$(gh release view "$latest" --repo anomalyco/opencode --json body --jq '.body' 2>/dev/null | head -c 6000 || echo "(no GitHub release for this tag — see https://github.com/anomalyco/opencode/tags)")
+          {
+            echo "New OpenCode release: **$latest**."
+            echo ""
+            echo "The plugin is currently contract-checked against OpenCode ${{ steps.detect.outputs.tested }}."
+            echo ""
+            echo "Compatibility checklist:"
+            echo "- [ ] V2 \`ctx.shell.hook(\"create.before\")\` event fields (\`command\`, \`cwd\`, \`timeout\`, \`shell\`, \`env\`) and disposal"
+            echo "- [ ] V2 \`ctx.tool.hook(\"execute.before\")\` shape and tool ids (\`shell\`, \`bash\`)"
+            echo "- [ ] V1 \`tool.execute.before\` args/output and plugin input (\`directory\`, \`worktree\`)"
+            echo "- [ ] shell service / TUI terminal still route through \`Shell.create\`"
+            echo "- [ ] npm plugin manifest resolution (\`main\`, \`exports\`, \`oc-plugin\`) and \`ctx.options\`"
+            echo "- [ ] Bun runtime surfaces used by the plugin (\`Bun.spawn\`, \`Bun.spawnSync\`)"
+            echo "- [ ] bwrap / \`sandbox-exec\` behavior on the supported OS versions"
+            echo ""
+            echo "Release notes (first 6000 chars):"
+            echo '```'
+            printf '%s\n' "$notes"
+            echo '```'
+          } > /tmp/upstream-issue.md
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Review compatibility with OpenCode $latest" \
+            --body-file /tmp/upstream-issue.md \
+            --label "github_actions"

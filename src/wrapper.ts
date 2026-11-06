@@ -16,7 +16,7 @@ import path from "node:path";
 import { type Resolved, resolveSandboxBinary } from "./binary.ts";
 import { buildDarwinProfile, darwinEnvironment } from "./darwin.ts";
 import { contains } from "./paths.ts";
-import { probe } from "./probe.ts";
+import { probe, runProcess } from "./probe.ts";
 import { buildLinuxProfile } from "./profile.ts";
 import { shellJoin } from "./quote.ts";
 import type { Platform, SandboxLayout, SandboxOptions } from "./types.ts";
@@ -153,6 +153,19 @@ function darwinScript(
   return `${HEADER}\n${cwdGuard(runtime.layout)}\nexec ${invocation}\n`;
 }
 
+/**
+ * Run the generated wrapper, not just the sandbox binary. This validates the
+ * exact profile, mounts and shell at setup time, so a broken generated config
+ * fails closed before the first user command.
+ */
+async function probeWrapper(wrapper: string, cwd: string): Promise<void> {
+  const result = await runProcess(wrapper, ["-c", "exit 42"], { timeoutMs: 5000, cwd });
+  if (result.code === 42) return;
+  const detail =
+    result.stderr === "" ? `exit ${result.code}` : `exit ${result.code}: ${result.stderr}`;
+  throw new Error(`generated sandbox wrapper failed (${detail})`);
+}
+
 export async function prepareRuntime(
   platform: Platform,
   layout: SandboxLayout,
@@ -235,6 +248,7 @@ export async function prepareRuntime(
 
     fs.writeFileSync(base.wrapper, script, { mode: 0o700, flag: "wx" });
     fs.chmodSync(base.wrapper, 0o700);
+    await probeWrapper(base.wrapper, layout.workspace);
     return {
       ok: true,
       runtime: {

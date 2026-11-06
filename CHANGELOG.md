@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.1 — mount precedence and boundary hardening
+
+- **Deterministic mount precedence.** Both engines now apply mounts from the
+  broadest to the narrowest path. A specific readable subdirectory overrides the
+  writable workspace; a readable ancestor no longer makes the workspace
+  read-only; a writable child wins over a readable parent. The same path cannot
+  be both writable and readable, and the workspace cannot be listed as
+  readable: contradictory configurations fail at setup.
+- **Readable paths are really read-only on macOS.** Seatbelt write rules are
+  emitted broad-to-narrow with `deny file-write*` for readable paths, matching
+  the Linux bind order. Writable paths are also readable on macOS (previously
+  they were write-only), and they are added to the sandbox `PATH` roots.
+- **System-write guard covers `/run` and `/var` subtrees.** `/run`, `/var/lib`,
+  `/var/log`, `/var/spool`, `/private/var/...` and the other system roots are
+  rejected as workspace or writable mounts. `/tmp`, `/var/tmp`,
+  `/private/var/tmp`, `/var/folders`, `/private/var/folders` and `/var/www`
+  remain explicit writable exceptions.
+- **macOS credential guard.** `~/Library/Application Support/opencode` is now a
+  protected credential directory, alongside the XDG stores and `~/.ssh`.
+- **Exact-wrapper probe.** Setup now runs the generated wrapper with
+  `-c 'exit 42'` after writing it, so a broken profile, mount or configured
+  `shell` fails closed before the first command instead of surfacing later.
+- **Compatibility watch and packaging.** Added the upstream OpenCode
+  compatibility workflow and README anchor; `scripts/` is included in the npm
+  package so the published `smoke` script is runnable. Documentation now
+  states the mount-precedence rules, the system-root exceptions and the
+  subagent shell/file-tool distinction.
+- 90 tests, including real bwrap integration, macOS profile rules and a
+  failing-shell setup test.
+
 ## 0.1.0 — first release
 
 - OpenCode **V1 and V2** from one package: V2 uses `ctx.shell.hook("create.before")`
