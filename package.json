@@ -1,6 +1,6 @@
 {
   "name": "@hamzaabili/opencode-sandbox",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "OpenCode V1 + V2 command sandbox: every shell command runs inside native bubblewrap (Linux) or Seatbelt (macOS) with a read-only system, a writable project, no ambient secrets and network denied by default. Fail-closed, zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
@@ -15,11 +15,15 @@
     "bwrap",
     "seatbelt",
     "sandbox-exec",
+    "command-sandbox",
+    "agent-sandbox",
+    "linux",
     "macos",
     "security",
     "agent-safety",
     "isolation"
   ],
+  "homepage": "https://github.com/Hamza-Abili/opencode-sandbox#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Hamza-Abili/opencode-sandbox.git"

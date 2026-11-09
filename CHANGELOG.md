@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 — packaging and discoverability only
+
+- No runtime changes: `src/` and `index.ts` are identical to 0.1.1.
+- Added `homepage` and search keywords (`command-sandbox`, `agent-sandbox`,
+  `linux`) to `package.json`, and a short cross-link section for the other
+  plugins by the same author.
+
 ## 0.1.1 — mount precedence and boundary hardening
 
 - **Deterministic mount precedence.** Both engines now apply mounts from the
