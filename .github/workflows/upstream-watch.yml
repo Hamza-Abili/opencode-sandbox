@@ -1,10 +1,20 @@
 name: upstream-watch
 
 # Self-maintenance loop: when a newer OpenCode release lands, open a
-# compatibility issue, verify the plugin against that exact version, and close
-# the loop. The README anchor ("tested on X.Y.Z;") is the machine-readable
-# state; it moves only after a green `bun run compat` (unit/contract suite plus
-# a live smoke against the real binary). Deterministic: docs only, no release.
+# compatibility issue, verify the plugin against that exact version, and
+# prepare the docs update as a pull request. The README anchor
+# ("tested on X.Y.Z;") moves only through a PR, merged by a human; merging the
+# PR closes the issue.
+#
+# Threat model: the verification job downloads and executes an upstream binary,
+# so it gets a read-only token and never sees a write credential. The publish
+# job has write access, runs no upstream code and installs no dependencies.
+# The check and failure jobs only call the GitHub API. Actions are pinned by
+# commit SHA; Dependabot keeps them current.
+#
+# Repository prerequisite: Actions > General must allow GitHub Actions to
+# create pull requests. Keep the default workflow token read-only; every job
+# below declares its own permissions.
 #
 # Note on the upstream version source: OpenCode publishes tags for both the v1
 # and v2 lines (and GitHub releases for current v2 versions). Reading tags
@@ -12,7 +22,7 @@ name: upstream-watch
 
 on:
   schedule:
-    - cron: "30 4 * * 1" # Mondays 04:30 UTC
+    - cron: "30 4 * * *" # daily 04:30 UTC
   workflow_dispatch:
 
 concurrency:
@@ -27,14 +37,16 @@ jobs:
     permissions:
       contents: read
       issues: write
+      pull-requests: write
     outputs:
       tested: ${{ steps.detect.outputs.tested }}
       latest: ${{ steps.detect.outputs.latest }}
       newer: ${{ steps.detect.outputs.newer }}
       equal: ${{ steps.detect.outputs.equal }}
       issue: ${{ steps.issue.outputs.number }}
+      pr: ${{ steps.pr.outputs.number }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -66,6 +78,39 @@ jobs:
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
           echo "newer=$newer" >> "$GITHUB_OUTPUT"
           echo "equal=$equal" >> "$GITHUB_OUTPUT"
+
+      - name: Close non-target compatibility pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ steps.detect.outputs.newer == 'true' && steps.detect.outputs.latest || steps.detect.outputs.tested }}
+        run: |
+          set -euo pipefail
+          gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
+            --json number,headRefName,author,isCrossRepository \
+            --jq '.[] | "\(.number)\t\(.author.login)\t\(.isCrossRepository)\t\(.headRefName)"' \
+            | while IFS=$'\t' read -r n author cross head; do
+                case "$head" in
+                  compat/opencode-[0-9]*.[0-9]*.[0-9]*-*) ;;
+                  *) continue ;;
+                esac
+                v=$(printf '%s' "$head" | sed -E 's#^compat/opencode-([0-9]+\.[0-9]+\.[0-9]+)-.*#\1#')
+                [ "$v" != "$TARGET" ] || continue
+                case "$author" in
+                  "github-actions[bot]"|"app/github-actions")
+                    if [ "$cross" = "false" ]; then
+                      gh pr close "$n" --repo "$GITHUB_REPOSITORY" --delete-branch \
+                        --comment "Superseded by OpenCode v$TARGET." < /dev/null
+                    else
+                      gh pr close "$n" --repo "$GITHUB_REPOSITORY" \
+                        --comment "Superseded by OpenCode v$TARGET." < /dev/null
+                    fi
+                    ;;
+                  *)
+                    gh pr close "$n" --repo "$GITHUB_REPOSITORY" \
+                      --comment "Superseded by OpenCode v$TARGET." < /dev/null
+                    ;;
+                esac
+              done
 
       - name: Find or open the compatibility issue
         id: issue
@@ -109,10 +154,9 @@ jobs:
               --label "github_actions")
             number=${url##*/}
           fi
-          if [ -z "$number" ]; then
-            echo "::error::could not resolve the compatibility issue number"
-            exit 1
-          fi
+          case "$number" in
+            ''|*[!0-9]*) echo "::error::could not resolve the compatibility issue number"; exit 1 ;;
+          esac
           echo "number=$number" >> "$GITHUB_OUTPUT"
           # Only the newest release is actionable: close older compatibility issues.
           latest_num="${latest#v}"
@@ -140,6 +184,22 @@ jobs:
                     ;;
                 esac
               done
+
+      - name: Check for an open compatibility pull request
+        id: pr
+        if: steps.detect.outputs.newer == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ steps.detect.outputs.latest }}
+        run: |
+          set -euo pipefail
+          prefix="compat/opencode-${LATEST}-"
+          number=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
+            --json number,headRefName,baseRefName,author,isCrossRepository \
+            --jq '.[] | "\(.number)\t\(.author.login)\t\(.isCrossRepository)\t\(.baseRefName)\t\(.headRefName)"' \
+            | awk -F'\t' -v p="$prefix" \
+                '($2=="github-actions[bot]" || $2=="app/github-actions") && $3=="false" && $4=="main" && index($5,p)==1 && !found {print $1; found=1}')
+          echo "number=$number" >> "$GITHUB_OUTPUT"
 
       - name: Reconcile already-verified issues
         if: steps.detect.outputs.equal == 'true'
@@ -169,18 +229,21 @@ jobs:
 
   verify:
     needs: check
-    if: github.ref == 'refs/heads/main' && needs.check.outputs.newer == 'true' && needs.check.outputs.issue != ''
+    if: |
+      github.ref == 'refs/heads/main' &&
+      needs.check.outputs.newer == 'true' &&
+      needs.check.outputs.issue != '' &&
+      needs.check.outputs.pr == ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: write
-      issues: write
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: latest
 
@@ -192,9 +255,36 @@ jobs:
           VERSION: ${{ needs.check.outputs.latest }}
         run: |
           set -euo pipefail
-          curl -fsSL https://opencode.ai/v2/install \
-            | bash -s -- --version "$VERSION" --no-modify-path
-          binary="$HOME/.opencode/bin/opencode"
+          case "$(uname -m)" in
+            x86_64|amd64) asset="opencode-linux-x64.tar.gz" ;;
+            aarch64|arm64) asset="opencode-linux-arm64.tar.gz" ;;
+            *) echo "::error::unsupported runner architecture $(uname -m)"; exit 1 ;;
+          esac
+          url="https://github.com/anomalyco/opencode/releases/download/v${VERSION}/${asset}"
+          curl -fsSL "$url" -o /tmp/opencode.tar.gz
+          curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${VERSION}/SHA256SUMS" -o /tmp/SHA256SUMS
+          expected=$(grep -E "  ${asset}$" /tmp/SHA256SUMS | awk '{print $1}')
+          actual=$(sha256sum /tmp/opencode.tar.gz | awk '{print $1}')
+          if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+            echo "::error::release asset checksum mismatch for $asset"
+            exit 1
+          fi
+          members=$(tar -tzf /tmp/opencode.tar.gz)
+          if printf '%s\n' "$members" | grep -Eq '^/|(^|/)\.\.(/|$)'; then
+            echo "::error::release asset contains an unsafe path"
+            exit 1
+          fi
+          if tar -tvzf /tmp/opencode.tar.gz | grep -Eq '^[lh]'; then
+            echo "::error::release asset contains a symlink or hardlink"
+            exit 1
+          fi
+          mkdir -p /tmp/opencode-dist
+          tar -xzf /tmp/opencode.tar.gz --no-same-owner --no-same-permissions -C /tmp/opencode-dist
+          binary=$(find /tmp/opencode-dist -type f -name opencode -perm -u+x | head -1)
+          if [ -z "$binary" ]; then
+            echo "::error::opencode binary not found in the v$VERSION release asset"
+            exit 1
+          fi
           actual=$("$binary" --version | grep -m1 -oE '[0-9]+\.[0-9]+\.[0-9]+')
           if [ "$actual" != "$VERSION" ]; then
             echo "::error::installed OpenCode $actual, expected $VERSION"
@@ -203,27 +293,48 @@ jobs:
           echo "OPENCODE_BIN=$binary" >> "$GITHUB_ENV"
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Compatibility check
-        id: compat
         env:
           SANDBOX_REQUIRE_BWRAP: "1"
           SANDBOX_TEST_INTERNET: "1"
         run: bun run compat
 
-      - name: Mark the tested version
+  publish:
+    needs: [check, verify]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      needs.check.outputs.newer == 'true' &&
+      needs.check.outputs.issue != '' &&
+      needs.check.outputs.pr == '' &&
+      needs.verify.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Prepare the anchor branch
         id: mark
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
           VERSION: ${{ needs.check.outputs.latest }}
           ISSUE: ${{ needs.check.outputs.issue }}
         run: |
           set -euo pipefail
           git reset --hard "$BASE_SHA"
+          branch="compat/opencode-${VERSION}-${RUN_ID}"
+          git switch -c "$branch"
           sed -i -E "s/tested on [0-9]+\.[0-9]+\.[0-9]+;/tested on ${VERSION};/" README.md
-          anchors=$(grep -oE "tested on [0-9]+\.[0-9]+\.[0-9]+;" README.md | wc -l | tr -d ' ')
+          anchors=$(grep -oE "tested on [0-9]+\.[0-9]+\.[0-9]+;" README.md | wc -l | tr -d ' ' || true)
           if [ "$anchors" != "1" ]; then
             echo "::error::README must contain exactly one tested-on anchor, found $anchors"
             exit 1
@@ -263,37 +374,56 @@ jobs:
               exit 1
             fi
             gh auth setup-git
-            git -c core.hooksPath=/dev/null push origin "$commit_sha:main"
+            git -c core.hooksPath=/dev/null push origin "$commit_sha:refs/heads/$branch"
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "pushed=true" >> "$GITHUB_OUTPUT"
+            echo "branch=$branch" >> "$GITHUB_OUTPUT"
           fi
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Comment and close
+      - name: Open the pull request and comment
+        id: pr
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ needs.check.outputs.issue }}
           VERSION: ${{ needs.check.outputs.latest }}
+          CHANGED: ${{ steps.mark.outputs.changed }}
+          BRANCH: ${{ steps.mark.outputs.branch }}
+          COMMIT: ${{ steps.mark.outputs.commit }}
         run: |
           set -euo pipefail
-          if [ "${{ steps.mark.outputs.changed }}" = "true" ]; then
-            anchor="updated to \`tested on $VERSION;\` in ${{ steps.mark.outputs.commit }}"
-          else
-            anchor="already at \`tested on $VERSION;\`"
+          if [ "$CHANGED" != "true" ]; then
+            gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body \
+              "Already verified on OpenCode v$VERSION; the README anchor matches. Closing."
+            gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed
+            exit 0
           fi
+          body=$(cat <<EOF
+          Marks the plugin as verified against OpenCode v$VERSION.
+
+          - \`bun run ci\` — pass (lint, typecheck, tests)
+          - \`bun run smoke\` — pass against the real v$VERSION binary
+          - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          This PR changes only the README \`tested on\` anchor.
+
+          Closes #$ISSUE
+          EOF
+          )
+          url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+            --title "chore: mark tested on OpenCode v$VERSION" --body "$body")
           gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
           ### Compatibility verified — OpenCode v$VERSION
 
           - \`bun run ci\` — pass (lint, typecheck, tests)
-          - \`bun run smoke\` — pass against the real v$VERSION binary (plugin loaded, contract assertions green)
-          - README anchor $anchor
+          - \`bun run smoke\` — pass against the real v$VERSION binary
+          - Pull request: $url (docs-only, commit $COMMIT)
           - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-          Closing: the watchdog will not reopen this issue for v$VERSION.
+          Merging the PR moves the README anchor and closes this issue. The watchdog will not reopen it for v$VERSION.
           EOF
           )"
-          gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed
 
       - name: Report the failure
         if: failure()
@@ -301,27 +431,46 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ needs.check.outputs.issue }}
           VERSION: ${{ needs.check.outputs.latest }}
-          COMPAT: ${{ steps.compat.outcome }}
           PUSHED: ${{ steps.mark.outputs.pushed }}
           CHANGED: ${{ steps.mark.outputs.changed }}
         run: |
           if [ "$PUSHED" = "true" ]; then
-            state="The compatibility check passed and the README anchor was updated, but a follow-up step failed. The next scheduled run reconciles this issue."
-          elif [ "$COMPAT" = "success" ]; then
-            if [ "$CHANGED" = "false" ]; then
-              state="The compatibility check passed and the README anchor was already current, but a follow-up step failed. The next scheduled run reconciles this issue."
-            else
-              state="The compatibility check passed, but the README update was not published; the anchor was not changed. The next scheduled run retries."
-            fi
-          elif [ "$COMPAT" = "failure" ]; then
-            state="The compatibility check did not pass, so the README anchor was not changed. The next scheduled run retries."
+            state="The anchor branch was pushed, but creating the pull request or commenting failed. The anchor on main is unchanged."
+          elif [ "$CHANGED" = "false" ]; then
+            state="The README anchor was already current, but a follow-up step failed."
           else
-            state="The workflow failed before the compatibility check completed; the README anchor was not changed. The next scheduled run retries."
+            state="The anchor branch could not be published. The anchor on main is unchanged; the next run retries."
           fi
           gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
-          ### Upstream-watch failure — OpenCode v$VERSION
+          ### Upstream-watch publish failure — OpenCode v$VERSION
 
           $state
+
+          Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          )"
+
+  report-failure:
+    needs: [check, verify]
+    if: |
+      !cancelled() &&
+      needs.verify.result == 'failure' &&
+      needs.check.outputs.issue != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Comment the failure on the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ needs.check.outputs.issue }}
+          VERSION: ${{ needs.check.outputs.latest }}
+        run: |
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$(cat <<EOF
+          ### Compatibility verification failed — OpenCode v$VERSION
+
+          The install, test suite or live smoke did not pass, so no pull request was opened and the anchor on main is unchanged. The next daily run retries.
 
           Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF

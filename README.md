@@ -194,7 +194,7 @@ surfaces that are not the sandbox itself:
 bun install
 bun run ci      # biome + tsc + 90 tests (real sandbox integration included)
 bun run smoke   # live OpenCode 2.x shell + boundary check (OPENCODE_BIN to override)
-bun run compat  # ci + smoke; the weekly upstream-watch runs this before moving the tested-on anchor
+bun run compat  # ci + smoke; the daily upstream-watch runs this before moving the tested-on anchor
 ```
 
 CI makes a working sandbox a hard requirement
