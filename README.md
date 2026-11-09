@@ -87,7 +87,7 @@ its permission rules and records history against the rewritten command string,
 not the original one, so command-level deny/ask rules on the original command
 are not preserved. Use V2 when permission-rule fidelity matters. The adapter
 is tested against OpenCode 1.19.5. The V2 path is contract-checked against the
-OpenCode v2 plugin API (tested on 2.2.5; the package declares
+OpenCode v2 plugin API (tested on 2.2.6; the package declares
 `>=1.19 <2 || >=2.0`).
 
 ## Options
