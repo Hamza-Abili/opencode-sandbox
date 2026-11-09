@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — compatibility watchdog automation
+
+- `upstream-watch` now closes its own compatibility loop: it installs the
+  exact new OpenCode version, runs `bun run compat` (CI plus live smoke),
+  moves the `tested on X.Y.Z;` README anchor with a docs-only commit,
+  comments the evidence and closes the issue. A failed check leaves the
+  issue open for the next scheduled run; the anchor never moves backwards.
+
 ## 0.1.2 — packaging and discoverability only
 
 - No runtime changes: `src/` and `index.ts` are identical to 0.1.1.

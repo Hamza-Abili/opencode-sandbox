@@ -55,6 +55,7 @@
     "format": "biome check --write .",
     "test": "bun test",
     "ci": "bun run lint && bun run typecheck && bun run test",
+    "compat": "bun run ci && bun run smoke",
     "smoke": "bun scripts/smoke.ts"
   },
   "devDependencies": {
