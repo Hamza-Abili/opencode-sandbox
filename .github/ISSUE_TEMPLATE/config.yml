@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or design discussion
+    url: https://github.com/Hamza-Abili/opencode-sandbox/discussions
+    about: Ask for help, share a platform setup, or discuss a sandbox boundary.
+  - name: Security report
+    url: https://github.com/Hamza-Abili/opencode-sandbox/security/advisories/new
+    about: Report a sandbox escape or credential exposure privately. Do not open a public issue.

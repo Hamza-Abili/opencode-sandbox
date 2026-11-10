@@ -210,6 +210,15 @@ Same constraints: MIT, zero runtime dependencies, OpenCode V1 + V2.
 - [opencode-agent-plugins](https://github.com/Hamza-Abili/opencode-agent-plugins) — Agent Plugins 1.0 client: discovery from `.agents/plugins` and npm packages, native skills, trust-first MCP registration.
 - [opencode-telegram-notify](https://github.com/Hamza-Abili/opencode-telegram-notify) — Telegram notifications for permission prompts, questions and idle sessions, with tap-only inline buttons.
 
+## Support
+
+- Bugs: [open an issue](https://github.com/Hamza-Abili/opencode-sandbox/issues/new/choose)
+  with the matching template and redact secrets or private paths.
+- Setup and design questions: use
+  [Discussions](https://github.com/Hamza-Abili/opencode-sandbox/discussions).
+- Security: [private advisory](https://github.com/Hamza-Abili/opencode-sandbox/security/advisories/new),
+  never a public issue.
+
 ## Development
 
 ```

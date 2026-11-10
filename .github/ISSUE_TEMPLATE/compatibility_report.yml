@@ -1,0 +1,68 @@
+name: Compatibility report
+description: A V1/V2 path, permission, mount or shell case does not behave as documented
+title: "compat: "
+labels: ["compatibility", "needs reproduction"]
+body:
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      placeholder: "0.1.2"
+    validations:
+      required: true
+  - type: input
+    id: opencode-version
+    attributes:
+      label: OpenCode version
+      placeholder: "2.2.6"
+    validations:
+      required: true
+  - type: dropdown
+    id: generation
+    attributes:
+      label: OpenCode generation
+      options:
+        - V2 (shell hook)
+        - V1 (legacy adapter)
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Mount plan / readablePaths
+        - Network policy
+        - Workspace or credential-dir guard
+        - Environment clearing
+        - Permission rules
+        - V1 command rewriting
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Plugin options
+      description: Redact secrets and private paths.
+      render: jsonc
+  - type: textarea
+    id: command
+    attributes:
+      label: Minimal repro
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: trace
+    attributes:
+      label: Trace / error
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true

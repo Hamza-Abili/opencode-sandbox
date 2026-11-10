@@ -1,0 +1,72 @@
+name: Bug report
+description: The sandbox does not start, fails closed, or behaves unexpectedly
+title: "bug: "
+labels: ["bug", "needs reproduction"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste secrets, full environment dumps, or private commands.
+        Redact paths and command arguments that you do not want public.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      placeholder: "0.1.2"
+    validations:
+      required: true
+  - type: input
+    id: opencode-version
+    attributes:
+      label: OpenCode version and generation
+      placeholder: "2.2.6 (V2)"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: "Ubuntu 24.04 / macOS 15 / WSL"
+    validations:
+      required: true
+  - type: input
+    id: sandbox-binary
+    attributes:
+      label: Sandbox binary
+      description: Output of `bwrap --version` or `sandbox-exec -h` (first line).
+      placeholder: "bubblewrap 0.11.1"
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - enforce (default)
+        - permissive
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or session that fails
+      description: Redact arguments and paths as needed.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: trace
+    attributes:
+      label: Trace
+      description: Relevant lines from `OSB_TRACE=/tmp/osb.log`, without secrets.
+      render: text
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
