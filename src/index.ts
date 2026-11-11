@@ -12,18 +12,21 @@
 
 import { createSandbox, type V2Context } from "./app.ts";
 import { createLegacyServer, type V1Hooks, type V1PluginInput } from "./legacy.ts";
-import { parseOptions } from "./options.ts";
+import { parseOptionsSafe } from "./options.ts";
 
 async function setup(input: unknown): Promise<() => void> {
   const ctx = (await Promise.resolve(input ?? {})) as V2Context;
   const directory = ctx.location?.directory ?? process.cwd();
-  const options = parseOptions(ctx.options, directory);
+  const parsed = parseOptionsSafe(ctx.options, directory);
+  for (const error of parsed.errors) {
+    console.error(`[opencode-sandbox] invalid option: ${error}`);
+  }
   try {
-    const app = await createSandbox(ctx, options);
+    const app = await createSandbox(ctx, parsed.options);
     return () => app.dispose();
   } catch (error) {
     console.error(`[opencode-sandbox] setup failed: ${String(error)}`);
-    if (options.mode === "enforce") throw error;
+    if (parsed.options.mode === "enforce") throw error;
     return () => {};
   }
 }

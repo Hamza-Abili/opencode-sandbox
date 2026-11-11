@@ -16,7 +16,7 @@ import path from "node:path";
 import { mountPlan } from "./mounts.ts";
 import { ENV_ALLOWLIST, type LinuxProfileInput, RESERVED_ENV } from "./types.ts";
 
-const SYSTEM_PATHS = [
+export const LINUX_SYSTEM_READ = [
   "/usr",
   "/bin",
   "/sbin",
@@ -128,7 +128,7 @@ export function buildLinuxProfile(input: LinuxProfileInput): string[] {
   ];
   if (input.network === "allow") args.push("--share-net");
 
-  for (const target of SYSTEM_PATHS) bindSystem(args, target);
+  for (const target of LINUX_SYSTEM_READ) bindSystem(args, target);
 
   args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/run");
 
@@ -157,7 +157,7 @@ export function buildLinuxProfile(input: LinuxProfileInput): string[] {
   }
 
   const roots = [
-    ...SYSTEM_PATHS,
+    ...LINUX_SYSTEM_READ,
     "/run/current-system",
     layout.workspace,
     ...layout.writablePaths,

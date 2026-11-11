@@ -20,6 +20,33 @@ import { type MountMode, mountPlan, pathDepth } from "./mounts.ts";
 import { sandboxPath } from "./profile.ts";
 import { type DarwinProfileInput, ENV_ALLOWLIST, RESERVED_ENV } from "./types.ts";
 
+/**
+ * Tool-guard read roots: the system runtime without the broad temp and device
+ * trees. The file tools get OpenCode's own temp directory explicitly, so they
+ * do not need `/tmp`, `/var/folders` or `/dev`.
+ */
+export const DARWIN_TOOL_READ = [
+  "/System/Library",
+  "/System/Cryptexes",
+  "/System/Applications",
+  "/System/Volumes/Preboot",
+  "/System/DriverKit",
+  "/usr",
+  "/bin",
+  "/sbin",
+  "/Library",
+  "/Applications",
+  "/opt",
+  "/usr/local",
+  "/etc",
+  "/private/etc",
+  "/private/var/db",
+  "/private/var/select",
+  "/var/run",
+  "/private/var/run",
+  "/nix/store",
+];
+
 export const DARWIN_SYSTEM_READ = [
   // Never grant "/System": on macOS the data volume is mounted at
   // /System/Volumes/Data, which would expose /Users/<user> and every secret.

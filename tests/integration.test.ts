@@ -48,7 +48,7 @@ async function sandbox(workspace: string, overrides: Record<string, unknown> = {
   const fake = fakeShell();
   const app = await createSandbox(
     { location: { directory: workspace }, ...fake.context },
-    parseOptions(overrides, workspace)
+    parseOptions({ toolGuard: "off", ...overrides }, workspace)
   );
   const callback = fake.get();
   if (callback === undefined) throw new Error("sandbox was not installed");

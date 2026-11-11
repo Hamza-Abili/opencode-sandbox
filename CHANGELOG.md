@@ -1,6 +1,40 @@
 # Changelog
 
-## Unreleased — compatibility watchdog automation
+## 0.2.0 — in-process tool guard
+
+- **Tool guard on V2, enabled by default.** A new `ctx.permission.hook`
+  applies the workspace policy to OpenCode's file tools and `webfetch`:
+  `read`/`glob`/`grep` may touch the workspace, `writablePaths`,
+  `readablePaths` and the read-only system runtime; `write`/`edit`/`patch`
+  may touch only the workspace and `writablePaths`. Paths outside the policy
+  are denied with a readable message.
+- **`webfetch` policy.** `webfetch: "deny"` blocks the tool;
+  `webfetchAllowlist` restricts it to hostnames (`*.example.com` matches the
+  apex and subdomains). The `webfetch` tool checks redirects through the same
+  permission hook, so an allowed host cannot redirect around the list.
+  `image_generate` checks only its initial image URL; its redirects are not
+  re-checked.
+- **Symlink-aware checks.** Targets are resolved component by component,
+  including broken links, before the path policy is applied. A symlink inside
+  the workspace cannot point a file tool at `~/.ssh`.
+- **V1 best-effort guard.** The legacy `tool.execute.before` hook checks file
+  arguments (including `apply_patch`), patch headers with the V1 parser's
+  prefix/trim rules, and the initial `webfetch` URL. V1 has no redirect hook,
+  so redirects are not covered there.
+- **Fail closed without losing the shell sandbox.** If the V2 permission hook
+  is unavailable or registration fails, the plugin keeps the shell sandbox and
+  blocks the guarded tools through the tool hook. If an option is malformed,
+  it logs the error and falls back to `toolGuard: "enforce"` /
+  `webfetch: "deny"`; a configuration typo never disables the plugin.
+  `toolGuard: "off"` restores the 0.1 shell-only behavior.
+- README and SECURITY document the policy layer, its limits (in-process, not
+  OS-enforced; MCP/LSP/websearch/image generation remain outside), and the
+  tradeoff against whole-process sandboxes such as nono and OpenShell.
+- 152 tests, including tool-policy symlink/broken-link escapes, mount policy,
+  webfetch allowlists and the V1 adapter. The live smoke now asserts that the
+  V2 tool guard is registered.
+
+### Compatibility watchdog automation
 
 - `upstream-watch` now closes its own compatibility loop: it installs the
   exact new OpenCode version, runs `bun run compat` (CI plus live smoke),

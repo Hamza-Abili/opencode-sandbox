@@ -1,7 +1,7 @@
 {
   "name": "@hamzaabili/opencode-sandbox",
-  "version": "0.1.2",
-  "description": "OpenCode V1 + V2 command sandbox: every shell command runs inside native bubblewrap (Linux) or Seatbelt (macOS) with a read-only system, a writable project, no ambient secrets and network denied by default. Fail-closed, zero runtime dependencies.",
+  "version": "0.2.0",
+  "description": "OpenCode V1 + V2 command sandbox: every shell command runs inside native bubblewrap (Linux) or Seatbelt (macOS) with a read-only system, a writable project, no ambient secrets and network denied by default. A V2 in-process guard applies the same workspace and webfetch policy to file tools. Fail-closed, zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
   "author": "Hamza-Abili",

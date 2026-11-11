@@ -15,9 +15,10 @@
  */
 
 import { isShellTool } from "./app.ts";
-import { parseOptions } from "./options.ts";
+import { parseOptionsSafe } from "./options.ts";
 import { resolveCwd, resolveLayout } from "./paths.ts";
 import { shellQuote } from "./quote.ts";
+import { createToolPolicy, guardToolInput, isGuardedTool } from "./tool-policy.ts";
 import { trace } from "./trace.ts";
 import type { SandboxLayout, SandboxOptions } from "./types.ts";
 import { prepareRuntime } from "./wrapper.ts";
@@ -55,12 +56,15 @@ function commandArgs(output: V1ToolBeforeOutput): {
   };
 }
 
-function blocking(reason: string): V1Hooks {
-  const message = `[opencode-sandbox] ${reason}; refusing to run shell commands (mode=enforce)`;
+function blocking(reason: string, blockTools: boolean): V1Hooks {
+  const scope = blockTools ? "shell commands and guarded tools" : "shell commands";
+  const message = `[opencode-sandbox] ${reason}; refusing to run ${scope} (mode=enforce)`;
   console.error(message);
   return {
     "tool.execute.before": async (input) => {
-      if (isShellTool(input.tool)) throw new Error(message);
+      if (isShellTool(input.tool) || (blockTools && isGuardedTool(input.tool))) {
+        throw new Error(message);
+      }
     },
   };
 }
@@ -78,7 +82,11 @@ export async function createLegacyServer(
       : typeof input.worktree === "string"
         ? input.worktree
         : process.cwd();
-  const options: SandboxOptions = parseOptions(rawOptions, workspace);
+  const parsed = parseOptionsSafe(rawOptions, workspace);
+  for (const error of parsed.errors) {
+    console.error(`[opencode-sandbox] invalid option: ${error}`);
+  }
+  const options: SandboxOptions = parsed.options;
 
   let layout: SandboxLayout;
   try {
@@ -91,7 +99,7 @@ export async function createLegacyServer(
       );
       return {};
     }
-    return blocking(reason);
+    return blocking(reason, options.toolGuard === "enforce");
   }
 
   if (process.platform !== "linux" && process.platform !== "darwin") {
@@ -102,7 +110,7 @@ export async function createLegacyServer(
       );
       return {};
     }
-    return blocking(reason);
+    return blocking(reason, options.toolGuard === "enforce");
   }
 
   const prepared = await prepareRuntime(process.platform, layout, options);
@@ -113,20 +121,39 @@ export async function createLegacyServer(
       );
       return {};
     }
-    return blocking(prepared.reason);
+    return blocking(prepared.reason, options.toolGuard === "enforce");
   }
 
+  let policy: ReturnType<typeof createToolPolicy> | undefined;
+  let policyError: string | undefined;
+  if (options.toolGuard === "enforce") {
+    try {
+      policy = createToolPolicy(layout, options);
+    } catch (error) {
+      policyError = error instanceof Error ? error.message : String(error);
+      console.error(`[opencode-sandbox] cannot build the tool policy: ${policyError}`);
+    }
+  }
   const prefix = `${shellQuote(prepared.runtime.wrapper)} -c `;
   const hooks: V1Hooks = {
     "tool.execute.before": async (toolInput, output) => {
-      if (!isShellTool(toolInput.tool)) return;
-      const args = commandArgs(output);
-      if (args.command === undefined || args.command === "") return;
-      if (args.command.startsWith(prefix)) return;
-      if (args.workdir !== undefined) resolveCwd(layout, args.workdir);
-      const record = output.args as { command: string };
-      record.command = `${prefix}${shellQuote(args.command)}`;
-      trace("sandboxed-v1", { tool: toolInput.tool, workdir: args.workdir });
+      if (isShellTool(toolInput.tool)) {
+        const args = commandArgs(output);
+        if (args.command === undefined || args.command === "") return;
+        if (args.command.startsWith(prefix)) return;
+        if (args.workdir !== undefined) resolveCwd(layout, args.workdir);
+        const record = output.args as { command: string };
+        record.command = `${prefix}${shellQuote(args.command)}`;
+        trace("sandboxed-v1", { tool: toolInput.tool, workdir: args.workdir });
+        return;
+      }
+      if (policy !== undefined) {
+        guardToolInput(toolInput.tool, output.args, policy);
+      } else if (policyError !== undefined && isGuardedTool(toolInput.tool)) {
+        throw new Error(
+          `[opencode-sandbox] tool policy unavailable (${policyError}); refusing guarded tools`
+        );
+      }
     },
     dispose: async () => {
       prepared.runtime.dispose();
@@ -134,16 +161,32 @@ export async function createLegacyServer(
     },
   };
 
+  const toolGuardLabel =
+    policy !== undefined ? "enforce" : policyError !== undefined ? "blocked" : options.toolGuard;
+  const webfetchLabel =
+    policy !== undefined
+      ? options.webfetch === "deny"
+        ? "deny"
+        : options.webfetchAllowlist.length > 0
+          ? `allowlist(${options.webfetchAllowlist.length})`
+          : "allow"
+      : policyError !== undefined
+        ? "blocked"
+        : "unguarded";
   console.log(
     `[opencode-sandbox] ready v1 (platform=${process.platform}, ` +
       `sandbox=${process.platform === "linux" ? "bwrap" : "seatbelt"}, ` +
-      `network=${options.network}, mode=${options.mode}, workspace=${layout.workspace})`
+      `network=${options.network}, mode=${options.mode}, toolGuard=${toolGuardLabel}, ` +
+      `webfetch=${webfetchLabel}, workspace=${layout.workspace})`
   );
   trace("ready-v1", {
     platform: process.platform,
     binary: prepared.runtime.binary,
     network: options.network,
     mode: options.mode,
+    toolGuard: toolGuardLabel,
+    webfetch: webfetchLabel,
+    webfetchAllowlist: options.webfetchAllowlist.length,
     workspace: layout.workspace,
   });
   return hooks;

@@ -70,7 +70,7 @@ describe("V1 adapter", () => {
     }
   });
 
-  test("leaves non-shell tools untouched", async () => {
+  test("leaves non-shell tools without path arguments untouched", async () => {
     if (!runnable) return;
     const workspace = tempDir();
     const hooks = await createLegacyServer({ worktree: workspace }, {});
@@ -90,6 +90,22 @@ describe("V1 adapter", () => {
     await expect(
       hooks["tool.execute.before"]?.({ tool: "bash", sessionID: "s", callID: "c" }, { args })
     ).rejects.toThrow(/host home/);
+    await expect(
+      hooks["tool.execute.before"]?.(
+        { tool: "read", sessionID: "s", callID: "c" },
+        { args: { filePath: "AGENTS.md" } }
+      )
+    ).rejects.toThrow(/host home/);
+  });
+
+  test("does not block file tools on layout failure when toolGuard is off", async () => {
+    const hooks = await createLegacyServer({ worktree: os.homedir() }, { toolGuard: "off" });
+    await expect(
+      hooks["tool.execute.before"]?.(
+        { tool: "read", sessionID: "s", callID: "c" },
+        { args: { filePath: "AGENTS.md" } }
+      )
+    ).resolves.toBeUndefined();
   });
 
   test("fails closed when a workdir escapes the workspace", async () => {
@@ -101,6 +117,60 @@ describe("V1 adapter", () => {
       await expect(
         hooks["tool.execute.before"]?.({ tool: "bash", sessionID: "s", callID: "c" }, { args })
       ).rejects.toThrow(/outside/);
+    } finally {
+      await hooks.dispose?.();
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("guards V1 file tools when toolGuard is enforced", async () => {
+    if (!runnable) return;
+    const workspace = tempDir();
+    const hooks = await createLegacyServer({ worktree: workspace }, { toolGuard: "enforce" });
+    try {
+      const inside = { filePath: "AGENTS.md" };
+      await expect(
+        hooks["tool.execute.before"]?.(
+          { tool: "read", sessionID: "s", callID: "c" },
+          { args: inside }
+        )
+      ).resolves.toBeUndefined();
+
+      const outside = { filePath: path.join(os.homedir(), ".ssh", "id_rsa") };
+      await expect(
+        hooks["tool.execute.before"]?.(
+          { tool: "read", sessionID: "s", callID: "c" },
+          { args: outside }
+        )
+      ).rejects.toThrow(/read denied/);
+
+      const patch = {
+        patchText: `*** Add File:\t${path.join(os.homedir(), "outside.ts")}\n+export {}`,
+      };
+      await expect(
+        hooks["tool.execute.before"]?.(
+          { tool: "apply_patch", sessionID: "s", callID: "c" },
+          { args: patch }
+        )
+      ).rejects.toThrow(/apply_patch denied/);
+    } finally {
+      await hooks.dispose?.();
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("skips the V1 tool guard when toolGuard is off", async () => {
+    if (!runnable) return;
+    const workspace = tempDir();
+    const hooks = await createLegacyServer({ worktree: workspace }, { toolGuard: "off" });
+    try {
+      const outside = { filePath: path.join(os.homedir(), ".ssh", "id_rsa") };
+      await expect(
+        hooks["tool.execute.before"]?.(
+          { tool: "read", sessionID: "s", callID: "c" },
+          { args: outside }
+        )
+      ).resolves.toBeUndefined();
     } finally {
       await hooks.dispose?.();
       fs.rmSync(workspace, { recursive: true, force: true });

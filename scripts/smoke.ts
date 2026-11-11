@@ -159,8 +159,12 @@ if (ready === undefined) fail(`sandbox did not report ready: ${JSON.stringify(tr
 if (ready.data?.workspace === undefined)
   fail(`sandbox ready trace has no workspace: ${JSON.stringify(ready)}`);
 if (ready.data?.network !== "deny") fail(`unexpected network mode: ${JSON.stringify(ready)}`);
+if (ready.data?.toolGuard !== "enforce")
+  fail(`tool guard was not registered: ${JSON.stringify(ready)}`);
 const workspace = ready.data.workspace as string;
-console.log(`PASS trace: ${ready.data?.sandbox ?? "sandbox"} ready, workspace=${workspace}`);
+console.log(
+  `PASS trace: ${ready.data?.sandbox ?? "sandbox"} ready, toolGuard=enforce, workspace=${workspace}`
+);
 
 const created = await request("/api/session", { method: "POST", body: "{}" });
 if (created.status !== 200) fail(`session creation failed: ${created.status}`);

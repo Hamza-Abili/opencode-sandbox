@@ -4,6 +4,8 @@
 
 export type NetworkMode = "deny" | "allow";
 export type SandboxMode = "enforce" | "permissive";
+export type ToolGuardMode = "enforce" | "off";
+export type WebFetchMode = "allow" | "deny";
 export type Platform = "linux" | "darwin";
 
 export interface SandboxOptions {
@@ -22,6 +24,19 @@ export interface SandboxOptions {
   passEnv: string[];
   /** Shell used inside the sandbox. Absolute path. */
   shell: string;
+  /**
+   * enforce (default): apply the in-process tool policy to file tools and
+   * webfetch. off: shell sandbox only.
+   */
+  toolGuard: ToolGuardMode;
+  /** Webfetch policy: allow all, or deny every request. Default: allow. */
+  webfetch: WebFetchMode;
+  /**
+   * Hostnames allowed for webfetch. Empty means no host restriction; a
+   * non-empty list turns webfetch into an allowlist. `*.example.com` matches
+   * the apex and subdomains.
+   */
+  webfetchAllowlist: string[];
 }
 
 /** Validated, canonical paths the sandbox is built around. */
@@ -61,6 +76,9 @@ export const DEFAULT_OPTIONS: SandboxOptions = {
   readablePaths: [],
   passEnv: [],
   shell: "/bin/bash",
+  toolGuard: "enforce",
+  webfetch: "allow",
+  webfetchAllowlist: [],
 };
 
 /** Keys the sandbox always controls; `passEnv` may not override them. */
