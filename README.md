@@ -248,11 +248,15 @@ Tools such as [nono](https://nono.sh/docs/cli/clients/opencode) and
 boundary and therefore cover more than this plugin: file tools, MCP, LSP,
 `webfetch` and the rest of the process. The tradeoff is the launch model.
 
-As of November 2026, nono's V2 pack requires `--standalone` for full containment
-and, in that mode, disables project `opencode.json`, `AGENTS.md` and project
-plugins; without it, nono constrains the client but cannot guarantee the
-background server that runs tools is inside the sandbox. OpenShell runs the agent in a container with a
-gateway, network proxy and credential policy.
+As of November 2026, nono's V2 docs call for `--standalone` when you need full
+containment: OpenCode normally connects its client to a background daemon that
+owns tool execution, plugins and model requests. Sandboxing only the client
+leaves that daemon outside the boundary. Launching a fresh daemon inside the
+same sandbox meets the containment goal. nono's profile has also used
+`OPENCODE_DISABLE_PROJECT_CONFIG=1` as a startup workaround; that behavior can
+change as OpenCode fixes project discovery, so check the current profile.
+OpenShell runs the agent in a container with a gateway, network proxy and
+credential policy.
 
 This plugin does not relaunch OpenCode: it stays a server plugin, so project
 configuration and Desktop's local server keep working. Choose whole-process

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 — documentation correction only
+
+- No runtime changes. Corrected the nono comparison in the README:
+  `--standalone` is the full-containment recommendation because OpenCode's
+  background daemon owns tool execution; the `OPENCODE_DISABLE_PROJECT_CONFIG`
+  workaround is no longer assumed to be current. See the README for the
+  daemon-level explanation.
+
 ## 0.2.0 — in-process tool guard
 
 - **Tool guard on V2, enabled by default.** A new `ctx.permission.hook`
