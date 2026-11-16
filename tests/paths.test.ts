@@ -146,9 +146,15 @@ describe("resolveLayout", () => {
 
   test("keeps explicit temp roots writable under a denied parent", () => {
     if (!fs.existsSync("/var/tmp")) return;
-    const resolved = fs.realpathSync.native("/var/tmp");
-    const layout = resolveLayout("/var/tmp", { writablePaths: [], readablePaths: [] });
-    expect(layout.workspace).toBe(resolved);
+    const workspace = fs.realpathSync.native(
+      fs.mkdtempSync(path.join("/var/tmp", "osb-paths-temp-"))
+    );
+    try {
+      const layout = resolveLayout(workspace, { writablePaths: [], readablePaths: [] });
+      expect(layout.workspace).toBe(workspace);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   test("rejects conflicting writable and readable mounts", () => {
