@@ -1,7 +1,7 @@
 {
   "name": "@hamzaabili/opencode-sandbox",
-  "version": "0.2.1",
-  "description": "OpenCode V1 + V2 command sandbox: every shell command runs inside native bubblewrap (Linux) or Seatbelt (macOS) with a read-only system, a writable project, no ambient secrets and network denied by default. A V2 in-process guard applies the same workspace and webfetch policy to file tools. Fail-closed, zero runtime dependencies.",
+  "version": "0.3.0",
+  "description": "OpenCode V1 + V2 command sandbox: every shell command runs inside native bubblewrap (Linux) or Seatbelt (macOS) with a read-only system, a writable project, no ambient secrets and network denied by default. Trusted policy outside the workspace, protected OpenCode/Git config, a V2 in-process guard for file tools and webfetch. Fail-closed, zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
   "author": "Hamza-Abili",
@@ -19,6 +19,7 @@
     "agent-sandbox",
     "linux",
     "macos",
+    "wsl",
     "security",
     "agent-safety",
     "isolation"
@@ -33,6 +34,9 @@
   },
   "main": "./index.ts",
   "types": "./src/index.ts",
+  "bin": {
+    "opencode-sandbox": "./scripts/doctor.ts"
+  },
   "oc-plugin": [
     "server"
   ],
@@ -56,6 +60,7 @@
     "test": "bun test",
     "ci": "bun run lint && bun run typecheck && bun run test",
     "compat": "bun run ci && bun run smoke",
+    "doctor": "bun scripts/doctor.ts",
     "smoke": "bun scripts/smoke.ts"
   },
   "devDependencies": {

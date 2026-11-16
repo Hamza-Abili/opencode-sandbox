@@ -124,6 +124,41 @@ describe("createSandbox", () => {
     }
   });
 
+  test("leaves only exact trusted commands on the host shell", async () => {
+    if (!runnable) return;
+    const workspace = tempDir();
+    const fake = fakeShell();
+    const app = await createSandbox(
+      { location: { directory: workspace }, ...fake.context },
+      options(workspace, { unsandboxedCommands: ["printf trusted *"] })
+    );
+    try {
+      const callback = fake.get();
+      const trusted: ShellCreateEvent = {
+        command: "printf trusted value",
+        cwd: workspace,
+        timeout: 0,
+        shell: "/bin/bash",
+        env: {},
+      };
+      await callback?.(trusted);
+      expect(trusted.shell).toBe("/bin/bash");
+
+      const chained: ShellCreateEvent = {
+        command: "printf trusted value; printf nope",
+        cwd: workspace,
+        timeout: 0,
+        shell: "/bin/bash",
+        env: {},
+      };
+      await callback?.(chained);
+      expect(chained.shell).not.toBe("/bin/bash");
+    } finally {
+      app.dispose();
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("rejects a working directory outside the workspace", async () => {
     if (!runnable) return;
     const workspace = tempDir();

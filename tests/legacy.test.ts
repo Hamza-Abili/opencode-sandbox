@@ -19,6 +19,26 @@ const required =
 const available = binary.ok ? (await probe(platform, binary.path)).available : false;
 const runnable = available || required;
 
+async function withTrustedPolicy<T>(policy: Record<string, unknown>, run: () => Promise<T>) {
+  const previousXdg = process.env.XDG_CONFIG_HOME;
+  const previousDir = process.env.OPENCODE_CONFIG_DIR;
+  const root = tempDir("osb-v1-policy-");
+  const config = path.join(root, "opencode");
+  fs.mkdirSync(config, { recursive: true });
+  fs.writeFileSync(path.join(config, "opencode-sandbox.json"), JSON.stringify(policy));
+  process.env.XDG_CONFIG_HOME = root;
+  delete process.env.OPENCODE_CONFIG_DIR;
+  try {
+    return await run();
+  } finally {
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousXdg;
+    if (previousDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+    else process.env.OPENCODE_CONFIG_DIR = previousDir;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 describe("V1 adapter", () => {
   test("rewrites the command to the wrapper and keeps the workdir", async () => {
     if (!runnable) return;
@@ -48,8 +68,27 @@ describe("V1 adapter", () => {
       const input = { tool: "bash", sessionID: "s", callID: "c" };
       await hooks["tool.execute.before"]?.(input, { args });
       const once = args.command;
-      await hooks["tool.execute.before"]?.(input, { args });
-      expect(args.command).toBe(once);
+      const replay = { command: once };
+      await hooks["tool.execute.before"]?.(input, { args: replay });
+      expect(replay.command).toBe(once);
+
+      const fresh = { command: "echo fresh" };
+      await hooks["tool.execute.before"]?.(input, { args: fresh });
+      expect(fresh.command).not.toBe("echo fresh");
+      expect(fresh.command).toContain("echo fresh");
+
+      const sameIdPrefix = { command: `${once}; printf escaped` };
+      await expect(hooks["tool.execute.before"]?.(input, { args: sameIdPrefix })).rejects.toThrow(
+        /sandbox wrapper/
+      );
+
+      const malicious = { command: `${once}; printf escaped` };
+      await expect(
+        hooks["tool.execute.before"]?.(
+          { tool: "bash", sessionID: "s", callID: "evil" },
+          { args: malicious }
+        )
+      ).rejects.toThrow(/sandbox wrapper/);
     } finally {
       await hooks.dispose?.();
       fs.rmSync(workspace, { recursive: true, force: true });
@@ -99,7 +138,9 @@ describe("V1 adapter", () => {
   });
 
   test("does not block file tools on layout failure when toolGuard is off", async () => {
-    const hooks = await createLegacyServer({ worktree: os.homedir() }, { toolGuard: "off" });
+    const hooks = await withTrustedPolicy({ toolGuard: "off" }, () =>
+      createLegacyServer({ worktree: os.homedir() }, {})
+    );
     await expect(
       hooks["tool.execute.before"]?.(
         { tool: "read", sessionID: "s", callID: "c" },
@@ -162,7 +203,9 @@ describe("V1 adapter", () => {
   test("skips the V1 tool guard when toolGuard is off", async () => {
     if (!runnable) return;
     const workspace = tempDir();
-    const hooks = await createLegacyServer({ worktree: workspace }, { toolGuard: "off" });
+    const hooks = await withTrustedPolicy({ toolGuard: "off" }, () =>
+      createLegacyServer({ worktree: workspace }, {})
+    );
     try {
       const outside = { filePath: path.join(os.homedir(), ".ssh", "id_rsa") };
       await expect(

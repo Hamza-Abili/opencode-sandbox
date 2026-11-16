@@ -12,7 +12,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { contains } from "./path-utils.ts";
+import { protectedPaths } from "./protected.ts";
 import type { SandboxLayout } from "./types.ts";
+
+export { contains };
 
 function real(pathname: string): string {
   return fs.realpathSync.native(pathname);
@@ -24,13 +28,6 @@ function statOrNull(pathname: string): fs.Stats | null {
   } catch {
     return null;
   }
-}
-
-/** True when `target` is `root` or inside it (both canonical, absolute). */
-export function contains(root: string, target: string): boolean {
-  return (
-    target === root || target.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`)
-  );
 }
 
 /**
@@ -281,6 +278,89 @@ function validateMount(
   return resolved;
 }
 
+function nearestReal(value: string): string {
+  let current = value;
+  const suffix: string[] = [];
+  while (true) {
+    try {
+      const realAncestor = real(current);
+      return suffix.length === 0 ? realAncestor : path.join(realAncestor, ...suffix);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(value);
+      suffix.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/** Follow a final symlink even when its target does not exist. */
+function followFinalSymlinks(value: string): string {
+  let current = value;
+  for (let depth = 0; depth < 64; depth++) {
+    let info: fs.Stats;
+    try {
+      info = fs.lstatSync(current);
+    } catch {
+      return current;
+    }
+    if (!info.isSymbolicLink()) return current;
+    try {
+      const target = fs.readlinkSync(current);
+      current = path.isAbsolute(target) ? target : path.resolve(path.dirname(current), target);
+    } catch {
+      return current;
+    }
+  }
+  throw new Error(`deniedPaths ${value} has a symlink chain that is too deep`);
+}
+
+function resolveDeniedPaths(
+  values: readonly string[],
+  workspace: string,
+  hostHome: string
+): string[] {
+  const candidates = new Set<string>();
+  for (const value of values) {
+    const expanded =
+      value === "~"
+        ? hostHome
+        : value.startsWith("~/")
+          ? path.join(hostHome, value.slice(2))
+          : path.isAbsolute(value)
+            ? path.normalize(value)
+            : path.resolve(workspace, value);
+    // Resolve through the nearest existing ancestor so a missing path under a
+    // symlinked parent is still matched by the tool guard's canonical target.
+    // Also follow a final symlink whose target is missing (a broken `.env`
+    // link would otherwise hide only the link path, not the target).
+    for (const candidate of new Set([expanded, followFinalSymlinks(expanded)])) {
+      const resolved = nearestReal(candidate);
+      if (resolved === "/") throw new Error("deniedPaths must not include the filesystem root");
+      if (resolved === workspace || contains(resolved, workspace)) {
+        throw new Error(`deniedPaths ${resolved} would hide the workspace`);
+      }
+      if (resolved === hostHome || contains(resolved, hostHome)) {
+        throw new Error(`deniedPaths ${resolved} would hide the host home; deny a narrower path`);
+      }
+      candidates.add(candidate);
+      candidates.add(resolved);
+    }
+  }
+
+  // Keeping the broadest denial is enough and avoids contradictory masks.
+  const sorted = [...candidates].sort(
+    (left, right) =>
+      left.split(path.sep).length - right.split(path.sep).length || left.localeCompare(right)
+  );
+  const kept: string[] = [];
+  for (const candidate of sorted) {
+    if (kept.some((root) => contains(root, candidate))) continue;
+    kept.push(candidate);
+  }
+  return kept;
+}
+
 /**
  * Resolve and validate everything the profile will mount.
  *
@@ -294,6 +374,7 @@ export function resolveLayout(
   options: {
     writablePaths: string[];
     readablePaths: string[];
+    deniedPaths?: string[];
   },
   homeOverride?: string
 ): SandboxLayout {
@@ -337,11 +418,24 @@ export function resolveLayout(
     }
   }
 
+  const protectedRoots = protectedPaths(root, [...writable]);
+  for (const target of writable) {
+    if (protectedRoots.some((guard) => contains(guard, target))) {
+      throw new Error(
+        `writable path ${target} overlaps a protected workspace path (${protectedRoots.find(
+          (guard) => contains(guard, target)
+        )})`
+      );
+    }
+  }
+
   return {
     workspace: root,
     hostHome,
     writablePaths: [...writable],
     readablePaths: [...readable],
+    protectedPaths: protectedRoots,
+    deniedPaths: resolveDeniedPaths(options.deniedPaths ?? [], root, hostHome),
   };
 }
 
@@ -370,6 +464,9 @@ export function resolveCwd(layout: SandboxLayout, cwd: string | undefined): stri
   }
   if (!mountRoots(layout).some((root) => contains(root, resolved))) {
     throw new Error(`working directory ${resolved} is outside the sandboxed workspace`);
+  }
+  if (layout.deniedPaths.some((root) => contains(root, resolved))) {
+    throw new Error(`working directory ${resolved} is inside a denied path`);
   }
   return resolved;
 }

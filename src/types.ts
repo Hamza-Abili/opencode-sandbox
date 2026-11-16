@@ -37,6 +37,18 @@ export interface SandboxOptions {
    * the apex and subdomains.
    */
   webfetchAllowlist: string[];
+  /**
+   * Workspace paths hidden from the sandbox (trusted policy only). Existing
+   * files are masked, existing directories become empty, and the tool guard
+   * denies both reads and writes.
+   */
+  deniedPaths: string[];
+  /**
+   * Exact commands (or `prefix *` patterns) that run outside the sandbox
+   * (trusted policy only). A command containing shell metacharacters never
+   * matches.
+   */
+  unsandboxedCommands: string[];
 }
 
 /** Validated, canonical paths the sandbox is built around. */
@@ -49,6 +61,15 @@ export interface SandboxLayout {
   writablePaths: string[];
   /** Canonical extra read-only mounts. */
   readablePaths: string[];
+  /**
+   * Absolute workspace paths kept writable-proof inside the sandbox:
+   * OpenCode/Git configuration and execution hooks. Existing paths become
+   * read-only mounts; the tool guard also denies writes to paths that do not
+   * exist yet.
+   */
+  protectedPaths: string[];
+  /** Absolute paths hidden from the sandbox and denied by the tool guard. */
+  deniedPaths: string[];
 }
 
 export interface ProbeResult {
@@ -79,6 +100,8 @@ export const DEFAULT_OPTIONS: SandboxOptions = {
   toolGuard: "enforce",
   webfetch: "allow",
   webfetchAllowlist: [],
+  deniedPaths: [],
+  unsandboxedCommands: [],
 };
 
 /** Keys the sandbox always controls; `passEnv` may not override them. */

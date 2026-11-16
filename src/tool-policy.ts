@@ -17,11 +17,11 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { DARWIN_TOOL_READ } from "./darwin.ts";
 import { type MountMode, mountPlan } from "./mounts.ts";
 import { normalizeHostPattern } from "./options.ts";
+import { canonicalTarget, resolvePathKernel } from "./path-utils.ts";
 import { LINUX_SYSTEM_READ } from "./profile.ts";
 import type { SandboxLayout, SandboxOptions } from "./types.ts";
 
@@ -78,12 +78,18 @@ export function denyPolicyAction(event: PermissionEvaluation): void {
 }
 
 export interface ToolPolicy {
+  /** Canonical workspace root. */
+  readonly workspace: string;
   /** Lexical base OpenCode uses to resolve relative tool arguments. */
   readonly resolveBase: string;
   readonly hostHome: string;
   readonly readRoots: readonly string[];
   /** Broad-to-narrow mounts; the deepest match decides write access. */
   readonly mounts: ReadonlyArray<{ path: string; mode: MountMode }>;
+  /** Workspace config executed by a host process later; writes are refused. */
+  readonly protectedPaths: readonly string[];
+  /** Paths hidden from reads and writes. */
+  readonly deniedPaths: readonly string[];
   readonly webfetch: "allow" | "deny";
   readonly webfetchAllowlist: readonly string[];
 }
@@ -109,70 +115,6 @@ function canonicalRoots(values: readonly string[], hostHome: string): string[] {
 }
 
 /**
- * Resolve a path the way the kernel does: walk components in order, expand a
- * symlink when it is encountered, then apply later `..` segments to the
- * resolved location. `path.resolve` alone is wrong because it collapses `..`
- * before following a symlink; a workspace link to `.` plus `../` would be
- * checked against a path the tool never opens.
- */
-function resolvePathKernel(input: string): string {
-  const absolute = path.isAbsolute(input) ? input : path.resolve(input);
-  const parts = absolute.split(path.sep).filter(Boolean);
-  const resolved: string[] = [];
-  let links = 0;
-  let index = 0;
-
-  while (index < parts.length) {
-    const part = parts[index++];
-    if (part === ".") continue;
-    if (part === "..") {
-      resolved.pop();
-      continue;
-    }
-    resolved.push(part);
-    const current = path.sep + resolved.join(path.sep);
-    let stat: fs.Stats;
-    try {
-      stat = fs.lstatSync(current);
-    } catch {
-      continue;
-    }
-    if (!stat.isSymbolicLink()) continue;
-    if (++links > 40) throw new Error("too many symbolic links");
-
-    const link = fs.readlinkSync(current);
-    resolved.pop();
-    const linkParts = link.split(path.sep).filter((item) => item !== "");
-    if (path.isAbsolute(link)) resolved.length = 0;
-    parts.splice(index, 0, ...linkParts);
-  }
-  return path.sep + resolved.join(path.sep);
-}
-
-/** Canonical absolute target; non-existent suffixes are resolved through the nearest existing ancestor. */
-function canonicalTarget(input: string): string {
-  const expanded = resolvePathKernel(input);
-  try {
-    return fs.realpathSync.native(expanded);
-  } catch {
-    // Fall through to the nearest existing ancestor.
-  }
-
-  let current = expanded;
-  const suffix: string[] = [];
-  while (true) {
-    const parent = path.dirname(current);
-    if (parent === current) return expanded;
-    suffix.push(path.basename(current));
-    try {
-      return path.join(fs.realpathSync.native(parent), ...suffix.reverse());
-    } catch {
-      current = parent;
-    }
-  }
-}
-
-/**
  * True when target is root or inside it. Both values are canonical absolute
  * paths; realpath resolves the on-disk case, so the comparison stays
  * case-sensitive even on a case-insensitive volume.
@@ -185,75 +127,22 @@ function within(root: string, target: string): boolean {
   );
 }
 
+/**
+ * A `.git` below the workspace root is a nested repository/submodule. Its
+ * config and hooks are executed by a later host Git command, so the file tools
+ * must not write there. The root `.git` is writable (index, objects, refs).
+ */
+function nestedGitPath(target: string, workspace: string): boolean {
+  const relative = path.relative(workspace, target);
+  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`)) {
+    return false;
+  }
+  if (path.isAbsolute(relative)) return false;
+  return relative.split(path.sep).indexOf(".git") > 0;
+}
+
 function allowedBy(roots: readonly string[], target: string): boolean {
   return roots.some((root) => within(root, target));
-}
-
-/**
- * OpenCode's temp directory, but only when it stays inside the canonical temp
- * base. `/tmp` is world-writable: a stale or attacker-created
- * `/tmp/opencode -> /` must not add `/` to the read roots.
- */
-function openCodeTempRoot(hostHome: string): string | undefined {
-  try {
-    const base = fs.realpathSync.native(os.tmpdir());
-    // A user-set TMPDIR inside the home directory would let a pre-existing
-    // symlink turn the temp root into a credential directory.
-    if (base === hostHome || within(hostHome, base)) return undefined;
-
-    const entry = path.join(os.tmpdir(), "opencode");
-    // OpenCode creates this as a directory. A symlink is stale/attacker
-    // controlled and must not become a read root, even if it points inside the
-    // temp base.
-    try {
-      if (fs.lstatSync(entry).isSymbolicLink()) return undefined;
-    } catch {
-      // Not created yet; the canonical candidate below is still checked.
-    }
-
-    const candidate = canonicalTarget(entry);
-    if (candidate === base || !within(base, candidate)) return undefined;
-    // Never add the host home, a descendant, or an ancestor through the temp
-    // root; explicit readablePaths remain the way to grant those.
-    if (candidate === hostHome || within(hostHome, candidate) || within(candidate, hostHome)) {
-      return undefined;
-    }
-    return candidate;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * OpenCode retains truncated tool output under its data directory and tells
- * the model to read it. That one directory is read-only in the policy; the
- * rest of the data directory remains outside.
- */
-function openCodeToolOutputRoot(hostHome: string): string | undefined {
-  try {
-    const dataHome = process.env.XDG_DATA_HOME;
-    const data =
-      dataHome !== undefined && path.isAbsolute(dataHome)
-        ? path.resolve(dataHome)
-        : path.join(hostHome, ".local", "share");
-    const dataReal = canonicalTarget(data);
-    const base = canonicalTarget(path.join(data, "opencode"));
-    // `opencode` must stay inside the data root; a symlink to ~/.ssh must not
-    // turn its tool-output child into a read root.
-    if (base === dataReal || !within(dataReal, base)) return undefined;
-    const entry = path.join(data, "opencode", "tool-output");
-    try {
-      if (fs.lstatSync(entry).isSymbolicLink()) return undefined;
-    } catch {
-      // Not created yet; the canonical candidate below is still checked.
-    }
-    const candidate = canonicalTarget(entry);
-    if (candidate === base || !within(base, candidate)) return undefined;
-    if (candidate === hostHome || within(candidate, hostHome)) return undefined;
-    return candidate;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -286,9 +175,11 @@ function pathCandidates(resource: string, policy: ToolPolicy, expandHome = true)
 
 function isReadAllowed(resource: string, policy: ToolPolicy, expandHome = true): boolean {
   try {
-    return pathCandidates(resource, policy, expandHome).every((candidate) =>
-      allowedBy(policy.readRoots, canonicalTarget(candidate))
-    );
+    return pathCandidates(resource, policy, expandHome).every((candidate) => {
+      const target = canonicalTarget(candidate);
+      if (policy.deniedPaths.some((root) => within(root, target))) return false;
+      return allowedBy(policy.readRoots, target);
+    });
   } catch {
     return false;
   }
@@ -298,6 +189,9 @@ function isWriteAllowed(resource: string, policy: ToolPolicy, expandHome = true)
   try {
     return pathCandidates(resource, policy, expandHome).every((candidate) => {
       const target = canonicalTarget(candidate);
+      if (policy.deniedPaths.some((root) => within(root, target))) return false;
+      if (policy.protectedPaths.some((root) => within(root, target))) return false;
+      if (nestedGitPath(target, policy.workspace)) return false;
       let mode: MountMode | undefined;
       // mountPlan is broad-to-narrow; the deepest matching mount wins, exactly
       // like the Linux bind order and the macOS last-match Seatbelt rules.
@@ -447,9 +341,39 @@ function isWebfetchAllowed(url: string, policy: ToolPolicy): boolean {
 
 function deny(event: PermissionEvaluation, reason: string): void {
   event.effect = "deny";
-  event.message =
-    `[opencode-sandbox] ${reason}; allow it explicitly with ` +
-    `readablePaths/writablePaths/webfetchAllowlist, or set toolGuard: "off"`;
+  event.message = `[opencode-sandbox] ${reason}`;
+}
+
+/**
+ * Explain the exact policy that refused a path. Protected and denied paths are
+ * not fixable with `writablePaths`, so do not suggest it for those.
+ */
+function denialReason(
+  tool: string,
+  resource: string,
+  policy: ToolPolicy,
+  write: boolean,
+  expandHome = true
+): string {
+  let target = resource;
+  try {
+    target = canonicalTarget(resolveResource(resource, policy, expandHome));
+  } catch {
+    // Keep the user-supplied form in the message.
+  }
+  if (policy.deniedPaths.some((root) => within(root, target))) {
+    return `${tool} denied: ${resource} is hidden by deniedPaths`;
+  }
+  if (write && nestedGitPath(target, policy.workspace)) {
+    return `${tool} denied: ${resource} is a nested .git path; only the root .git is writable`;
+  }
+  if (write && policy.protectedPaths.some((root) => within(root, target))) {
+    return `${tool} denied: ${resource} is a protected workspace config path and is read-only`;
+  }
+  return (
+    `${tool} denied: ${resource} is outside the workspace and explicit mounts; ` +
+    `add it to readablePaths/writablePaths or set toolGuard: "off"`
+  );
 }
 
 /**
@@ -468,12 +392,12 @@ export function evaluatePermission(event: PermissionEvaluation, policy: ToolPoli
           !isReadAllowed(resource, policy, false) ||
           instructionLeak(resource, policy, false, "v2", !path.isAbsolute(resource)) !== undefined
       );
-      if (denied !== undefined) deny(event, `read denied for ${denied}`);
+      if (denied !== undefined) deny(event, denialReason("read", denied, policy, false, false));
       return;
     }
     case "edit": {
       const denied = event.resources.find((resource) => !isWriteAllowed(resource, policy, false));
-      if (denied !== undefined) deny(event, `write denied for ${denied}`);
+      if (denied !== undefined) deny(event, denialReason("write", denied, policy, true, false));
       return;
     }
     case "glob":
@@ -483,7 +407,9 @@ export function evaluatePermission(event: PermissionEvaluation, policy: ToolPoli
       // "undefined"/"null" is still a path and must be checked as one.
       const search = typeof raw === "string" && raw !== "" ? raw : ".";
       // FileAccess expands `~` for the actual search root.
-      if (!isReadAllowed(search, policy, true)) deny(event, `search denied for ${search}`);
+      if (!isReadAllowed(search, policy, true)) {
+        deny(event, denialReason(event.action, search, policy, false, true));
+      }
       return;
     }
     case "webfetch": {
@@ -497,13 +423,6 @@ export function evaluatePermission(event: PermissionEvaluation, policy: ToolPoli
 function stringArg(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key];
   return typeof value === "string" && value !== "" ? value : undefined;
-}
-
-function denial(tool: string, target: string): string {
-  return (
-    `[opencode-sandbox] ${tool} denied: ${target} is outside the workspace and explicit mounts; ` +
-    `add it to readablePaths/writablePaths or set toolGuard: "off"`
-  );
 }
 
 const PATCH_HEADERS = ["*** Add File:", "*** Update File:", "*** Delete File:", "*** Move to:"];
@@ -563,7 +482,11 @@ export function guardToolInput(
           ? isReadAllowed(target, policy, expandHome) &&
             instructionLeak(target, policy, expandHome, mode, internal) === undefined
           : isWriteAllowed(target, policy, expandHome);
-      if (!allowed) throw new Error(denial(tool, target));
+      if (!allowed) {
+        throw new Error(
+          `[opencode-sandbox] ${denialReason(tool, target, policy, tool !== "read", expandHome)}`
+        );
+      }
       return;
     }
     case "patch":
@@ -571,7 +494,11 @@ export function guardToolInput(
       const text = stringArg(args, "patchText");
       if (text === undefined) return;
       for (const target of patchTargets(text, mode)) {
-        if (!isWriteAllowed(target, policy, expandHome)) throw new Error(denial(tool, target));
+        if (!isWriteAllowed(target, policy, expandHome)) {
+          throw new Error(
+            `[opencode-sandbox] ${denialReason(tool, target, policy, true, expandHome)}`
+          );
+        }
       }
       return;
     }
@@ -584,7 +511,11 @@ export function guardToolInput(
         mode === "v2" && tool === "glob" && (raw === "undefined" || raw === "null")
           ? "."
           : (raw ?? ".");
-      if (!isReadAllowed(search, policy, expandHome)) throw new Error(denial(tool, search));
+      if (!isReadAllowed(search, policy, expandHome)) {
+        throw new Error(
+          `[opencode-sandbox] ${denialReason(tool, search, policy, false, expandHome)}`
+        );
+      }
       return;
     }
     case "webfetch": {
@@ -626,28 +557,19 @@ export function createToolPolicy(
       allowlist.push(normalized);
     }
   }
-  const temp = openCodeTempRoot(layout.hostHome);
-  const toolOutput = openCodeToolOutputRoot(layout.hostHome);
   const mounts = mountPlan(layout);
 
   return {
+    workspace: layout.workspace,
     resolveBase,
     hostHome: layout.hostHome,
     readRoots: canonicalRoots(
-      [
-        layout.workspace,
-        ...layout.writablePaths,
-        ...layout.readablePaths,
-        ...system,
-        // OpenCode stores generated and pasted images here; the read tool must
-        // be able to open them even though it is outside the workspace.
-        ...(temp === undefined ? [] : [temp]),
-        // Truncated tool output is retained here and the model is told to read it.
-        ...(toolOutput === undefined ? [] : [toolOutput]),
-      ],
+      [layout.workspace, ...layout.writablePaths, ...layout.readablePaths, ...system],
       layout.hostHome
     ),
     mounts,
+    protectedPaths: layout.protectedPaths,
+    deniedPaths: layout.deniedPaths,
     webfetch,
     webfetchAllowlist: allowlist,
   };

@@ -9,6 +9,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { normalizeUnsandboxedPattern } from "./escape.ts";
 import {
   DEFAULT_OPTIONS,
   type SandboxOptions,
@@ -67,6 +68,8 @@ function defaultShell(): string {
 export interface ParsedOptions {
   options: SandboxOptions;
   errors: string[];
+  /** Options explicitly present in the input; used to tighten trusted policy. */
+  present: ReadonlySet<keyof SandboxOptions>;
 }
 
 /**
@@ -77,8 +80,10 @@ export interface ParsedOptions {
 export function parseOptionsSafe(raw: unknown, cwd: string): ParsedOptions {
   const record = isRecord(raw) ? raw : {};
   const errors: string[] = [];
+  const present = new Set<keyof SandboxOptions>();
 
   const writable = new Set<string>();
+  if (record.writablePaths !== undefined) present.add("writablePaths");
   const writableValues = record.writablePaths === undefined ? [] : stringList(record.writablePaths);
   if (writableValues === undefined) {
     errors.push("writablePaths must be an array of strings");
@@ -90,6 +95,7 @@ export function parseOptionsSafe(raw: unknown, cwd: string): ParsedOptions {
   }
 
   const readable = new Set<string>();
+  if (record.readablePaths !== undefined) present.add("readablePaths");
   const readableValues = record.readablePaths === undefined ? [] : stringList(record.readablePaths);
   if (readableValues === undefined) {
     errors.push("readablePaths must be an array of strings");
@@ -101,6 +107,7 @@ export function parseOptionsSafe(raw: unknown, cwd: string): ParsedOptions {
   }
 
   const passEnv = new Set<string>();
+  if (record.passEnv !== undefined) present.add("passEnv");
   const passEnvValues = record.passEnv === undefined ? [] : stringList(record.passEnv);
   if (passEnvValues === undefined) {
     errors.push("passEnv must be an array of strings");
@@ -110,8 +117,39 @@ export function parseOptionsSafe(raw: unknown, cwd: string): ParsedOptions {
     }
   }
 
+  const deniedPaths = new Set<string>();
+  if (record.deniedPaths !== undefined) present.add("deniedPaths");
+  const deniedValues = record.deniedPaths === undefined ? [] : stringList(record.deniedPaths);
+  if (deniedValues === undefined) {
+    errors.push("deniedPaths must be an array of strings");
+  } else {
+    for (const value of deniedValues) {
+      if (value.trim() === "") continue;
+      deniedPaths.add(expandPath(value, cwd));
+    }
+  }
+
+  const unsandboxedCommands = new Set<string>();
+  if (record.unsandboxedCommands !== undefined) present.add("unsandboxedCommands");
+  const unsandboxedValues =
+    record.unsandboxedCommands === undefined ? [] : stringList(record.unsandboxedCommands);
+  if (unsandboxedValues === undefined) {
+    errors.push("unsandboxedCommands must be an array of strings");
+  } else {
+    for (const [index, value] of unsandboxedValues.entries()) {
+      const normalized = normalizeUnsandboxedPattern(value);
+      if (normalized === undefined) {
+        // Do not echo the value: a copied command may contain a credential.
+        errors.push(`unsandboxedCommands entry ${index + 1} is not a safe command pattern`);
+        continue;
+      }
+      unsandboxedCommands.add(normalized);
+    }
+  }
+
   let shell = defaultShell();
   if (record.shell !== undefined) {
+    present.add("shell");
     if (typeof record.shell === "string" && path.isAbsolute(record.shell)) {
       shell = record.shell;
     } else {
@@ -121,6 +159,7 @@ export function parseOptionsSafe(raw: unknown, cwd: string): ParsedOptions {
 
   let network = DEFAULT_OPTIONS.network;
   if (record.network !== undefined) {
+    present.add("network");
     if (record.network === "deny" || record.network === "allow") {
       network = record.network;
     } else {
@@ -130,6 +169,7 @@ export function parseOptionsSafe(raw: unknown, cwd: string): ParsedOptions {
 
   let mode = DEFAULT_OPTIONS.mode;
   if (record.mode !== undefined) {
+    present.add("mode");
     if (record.mode === "enforce" || record.mode === "permissive") {
       mode = record.mode;
     } else {
@@ -139,6 +179,7 @@ export function parseOptionsSafe(raw: unknown, cwd: string): ParsedOptions {
 
   let toolGuard: ToolGuardMode = DEFAULT_OPTIONS.toolGuard;
   if (record.toolGuard !== undefined) {
+    present.add("toolGuard");
     if (record.toolGuard === "enforce" || record.toolGuard === "off") {
       toolGuard = record.toolGuard;
     } else {
@@ -148,6 +189,7 @@ export function parseOptionsSafe(raw: unknown, cwd: string): ParsedOptions {
 
   let webfetch: WebFetchMode = DEFAULT_OPTIONS.webfetch;
   if (record.webfetch !== undefined) {
+    present.add("webfetch");
     if (record.webfetch === "allow" || record.webfetch === "deny") {
       webfetch = record.webfetch;
     } else {
@@ -158,6 +200,7 @@ export function parseOptionsSafe(raw: unknown, cwd: string): ParsedOptions {
 
   const webfetchAllowlist = new Set<string>();
   if (record.webfetchAllowlist !== undefined) {
+    present.add("webfetchAllowlist");
     const entries = stringList(record.webfetchAllowlist);
     if (entries === undefined) {
       errors.push("webfetchAllowlist must be an array of hostnames");
@@ -193,8 +236,11 @@ export function parseOptionsSafe(raw: unknown, cwd: string): ParsedOptions {
       toolGuard,
       webfetch,
       webfetchAllowlist: [...webfetchAllowlist],
+      deniedPaths: [...deniedPaths],
+      unsandboxedCommands: [...unsandboxedCommands],
     },
     errors,
+    present,
   };
 }
 

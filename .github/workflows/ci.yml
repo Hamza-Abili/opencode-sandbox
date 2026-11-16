@@ -33,3 +33,6 @@ jobs:
           SANDBOX_REQUIRE_BWRAP: ${{ runner.os == 'Linux' && '1' || '0' }}
           SANDBOX_REQUIRE_SANDBOX_EXEC: ${{ runner.os == 'macOS' && '1' || '0' }}
           SANDBOX_TEST_INTERNET: "1"
+
+      - name: Doctor smoke
+        run: bun scripts/doctor.ts doctor --json >/dev/null

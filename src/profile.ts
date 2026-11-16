@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { mountPlan } from "./mounts.ts";
+import { contains } from "./path-utils.ts";
 import { ENV_ALLOWLIST, type LinuxProfileInput, RESERVED_ENV } from "./types.ts";
 
 export const LINUX_SYSTEM_READ = [
@@ -30,6 +31,17 @@ export const LINUX_SYSTEM_READ = [
 ];
 
 const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin";
+
+function visiblePath(layout: LinuxProfileInput["layout"], target: string): boolean {
+  const roots = [
+    ...LINUX_SYSTEM_READ,
+    "/run/current-system",
+    layout.workspace,
+    ...layout.writablePaths,
+    ...layout.readablePaths,
+  ];
+  return roots.some((root) => contains(root, target) || contains(target, root));
+}
 
 function lstatOrNull(target: string): fs.Stats | null {
   try {
@@ -151,9 +163,83 @@ export function buildLinuxProfile(input: LinuxProfileInput): string[] {
 
   // Broad to narrow: a later bind shadows an earlier one, so a more specific
   // writable path wins over a broader readable parent and a more specific
-  // readable subdirectory overrides the writable workspace.
-  for (const mount of mountPlan(layout)) {
+  // readable subdirectory overrides the writable workspace. Protected-path
+  // ancestor directories are merged as rw pins so no ancestor can be renamed;
+  // a more specific child mount is emitted after its pin and keeps its mode.
+  const mounts = mountPlan(layout);
+  const mountPaths = new Set(mounts.map((mount) => mount.path));
+  const pinMode = (target: string): "rw" | "ro" => {
+    let mode: "rw" | "ro" = "rw";
+    for (const mount of mounts) {
+      if (contains(mount.path, target)) mode = mount.mode;
+    }
+    return mode;
+  };
+  const pins = new Map<string, "rw" | "ro">();
+  for (const target of layout.protectedPaths) {
+    let current = path.dirname(target);
+    while (current !== layout.workspace && contains(layout.workspace, current)) {
+      if (!mountPaths.has(current) && !pins.has(current)) {
+        try {
+          if (fs.statSync(current).isDirectory()) pins.set(current, pinMode(current));
+        } catch {
+          // Missing ancestors cannot be pinned; the protected path is missing too.
+        }
+      }
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+  const plan = [...mounts, ...[...pins].map(([pinPath, mode]) => ({ path: pinPath, mode }))].sort(
+    (left, right) =>
+      left.path.split(path.sep).length - right.path.split(path.sep).length ||
+      left.path.localeCompare(right.path)
+  );
+  for (const mount of plan) {
     args.push(mount.mode === "rw" ? "--bind" : "--ro-bind", mount.path, mount.path);
+  }
+
+  // Config that a host process executes later (OpenCode/Git/direnv) must stay
+  // read-only even when the workspace is writable. These binds come after the
+  // mount plan so they also override a more specific writable child.
+  for (const target of layout.protectedPaths) {
+    let resolved: string;
+    try {
+      resolved = fs.realpathSync.native(target);
+    } catch {
+      // Missing protected paths cannot be bind-mounted; the tool guard still
+      // denies writes through the file tools (documented Linux gap).
+      continue;
+    }
+    // Never bind a path outside the workspace through a repository-controlled
+    // parent symlink; protected binds are workspace-only.
+    if (!contains(layout.workspace, resolved)) continue;
+    args.push("--ro-bind", resolved, resolved);
+  }
+
+  // Denied files are replaced by /dev/null and denied directories by an empty
+  // tmpfs. Apply them last so they win over every other mount. Paths outside
+  // the mounted trees are not visible anyway and need no mask.
+  for (const target of layout.deniedPaths) {
+    let resolved: string;
+    try {
+      resolved = fs.realpathSync.native(target);
+    } catch {
+      continue;
+    }
+    if (!visiblePath(layout, resolved)) continue;
+    let directory = false;
+    try {
+      directory = fs.statSync(resolved).isDirectory();
+    } catch {
+      continue;
+    }
+    if (directory) {
+      args.push("--tmpfs", resolved);
+    } else {
+      args.push("--ro-bind", "/dev/null", resolved);
+    }
   }
 
   const roots = [

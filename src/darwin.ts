@@ -17,13 +17,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { type MountMode, mountPlan, pathDepth } from "./mounts.ts";
+import { contains } from "./path-utils.ts";
 import { sandboxPath } from "./profile.ts";
 import { type DarwinProfileInput, ENV_ALLOWLIST, RESERVED_ENV } from "./types.ts";
 
 /**
  * Tool-guard read roots: the system runtime without the broad temp and device
- * trees. The file tools get OpenCode's own temp directory explicitly, so they
- * do not need `/tmp`, `/var/folders` or `/dev`.
+ * trees. Host temp is deliberately absent; users can opt in with readablePaths.
  */
 export const DARWIN_TOOL_READ = [
   "/System/Library",
@@ -68,10 +68,6 @@ export const DARWIN_SYSTEM_READ = [
   "/private/var/select",
   "/var/run",
   "/private/var/run",
-  "/tmp",
-  "/private/tmp",
-  "/var/folders",
-  "/private/var/folders",
   "/dev",
   "/nix/store",
 ];
@@ -169,9 +165,6 @@ function addWriteRule(
 function writeRules(input: DarwinProfileInput): WriteRule[] {
   const rules = new Map<string, WriteRule>();
   addWriteRule(rules, input.home, "rw", 0);
-  for (const target of ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]) {
-    addWriteRule(rules, target, "rw", 0);
-  }
   for (const mount of mountPlan(input.layout)) {
     addWriteRule(rules, mount.path, mount.mode, 1);
   }
@@ -243,6 +236,80 @@ export function buildDarwinProfile(input: DarwinProfileInput): string {
       .join(" ")})`,
     '(allow file-read* file-write* (regex #"^/dev/ttys"))',
   ];
+
+  // Protected workspace config stays readable but never writable. These rules
+  // come after every allow rule (Seatbelt is last-match-wins), so they also
+  // override a more specific writable child mount.
+  for (const target of new Set(input.layout.protectedPaths)) {
+    rules.push(
+      `(deny file-write* (literal ${literal(target)}))`,
+      `(deny file-write* ${subpath(target)})`,
+      // A hardlink to a protected file would let a write through the alias
+      // modify the same inode. file-link is path-based on the source.
+      `(deny file-link (literal ${literal(target)}))`,
+      `(deny file-link ${subpath(target)})`
+    );
+  }
+
+  // Deny rename/unlink of every ancestor entry of a protected path. Seatbelt
+  // has no mountpoints, so without this a sandboxed `mv a a-old` could move a
+  // protected nested .git with its parent.
+  const ancestors = new Set<string>();
+  for (const target of input.layout.protectedPaths) {
+    let current = path.dirname(target);
+    while (current !== input.layout.workspace && contains(input.layout.workspace, current)) {
+      try {
+        if (fs.statSync(current).isDirectory()) {
+          const actual = fs.realpathSync.native(current);
+          ancestors.add(current);
+          ancestors.add(actual);
+        }
+      } catch {
+        // Missing ancestor: the protected path is missing as well.
+      }
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+  for (const ancestor of ancestors) {
+    rules.push(
+      `(deny file-write-unlink (literal ${literal(ancestor)}))`,
+      `(deny file-write-create (literal ${literal(ancestor)}))`
+    );
+  }
+
+  // The .git directory entry itself is not in protectedPaths (making the whole
+  // tree read-only would break git). Deny writes to the entry so a sandboxed
+  // command cannot rename .git to .git-old, modify it through the new name and
+  // rename it back. Seatbelt has no mountpoints, so this entry rule is required.
+  const git = path.join(input.layout.workspace, ".git");
+  try {
+    if (fs.statSync(git).isDirectory()) {
+      // Deny the directory entry without denying writes to .git/index or
+      // .git/objects inside it. Include the on-disk case so a .GIT alias on a
+      // case-insensitive volume cannot be renamed around the rule.
+      const actual = fs.realpathSync.native(git);
+      for (const entry of new Set([git, actual])) {
+        rules.push(
+          `(deny file-write-unlink (literal ${literal(entry)}))`,
+          `(deny file-write-create (literal ${literal(entry)}))`
+        );
+      }
+    }
+  } catch {
+    // No .git directory.
+  }
+
+  // Denied paths are hidden entirely; both content and writes are refused.
+  for (const target of new Set(input.layout.deniedPaths)) {
+    rules.push(
+      `(deny file-read* file-write* (literal ${literal(target)}))`,
+      `(deny file-read* file-write* ${subpath(target)})`,
+      `(deny file-link (literal ${literal(target)}))`,
+      `(deny file-link ${subpath(target)})`
+    );
+  }
 
   if (input.network === "allow") {
     rules.push(

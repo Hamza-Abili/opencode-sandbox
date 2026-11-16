@@ -28,6 +28,8 @@ function fixture(overrides: Record<string, unknown> = {}, base = os.tmpdir()) {
     hostHome: fs.realpathSync.native(os.homedir()),
     writablePaths: [writable],
     readablePaths: [readable],
+    protectedPaths: [],
+    deniedPaths: [],
   };
   const options = parseOptions(
     {
@@ -107,6 +109,8 @@ describe("evaluatePermission", () => {
       hostHome: fs.realpathSync.native(os.homedir()),
       writablePaths: [sub],
       readablePaths: [vendor],
+      protectedPaths: [],
+      deniedPaths: [],
     };
     const options = parseOptions({ toolGuard: "enforce" }, workspace);
     const policy = createToolPolicy(
@@ -244,6 +248,8 @@ describe("evaluatePermission", () => {
       hostHome: fs.realpathSync.native(os.homedir()),
       writablePaths: [],
       readablePaths: [lib],
+      protectedPaths: [],
+      deniedPaths: [],
     };
     const options = parseOptions({ toolGuard: "enforce", readablePaths: [lib] }, workspace);
     const policy = createToolPolicy(
@@ -323,6 +329,8 @@ describe("evaluatePermission", () => {
       hostHome: fs.realpathSync.native(os.homedir()),
       writablePaths: [],
       readablePaths: [],
+      protectedPaths: [],
+      deniedPaths: [],
     };
     const options = parseOptions({ toolGuard: "enforce" }, layout.workspace);
     const policy = createToolPolicy(
@@ -356,6 +364,8 @@ describe("evaluatePermission", () => {
       hostHome: fs.realpathSync.native(os.homedir()),
       writablePaths: [],
       readablePaths: [root],
+      protectedPaths: [],
+      deniedPaths: [],
     };
     const options = parseOptions({ toolGuard: "enforce", readablePaths: [root] }, workspace);
     const policy = createToolPolicy(
@@ -454,46 +464,20 @@ describe("evaluatePermission", () => {
     }
   });
 
-  test("allows OpenCode's temp directory for generated images", () => {
+  test("denies host temp reads by default", () => {
     const f = fixture();
     try {
-      const image = event("read", [
+      const policy = createToolPolicy(f.layout, f.options, "darwin");
+      for (const target of [
         path.join(os.tmpdir(), "opencode", "images", "session", "image.png"),
-      ]);
-      evaluatePermission(image, f.policy);
-      expect(image.effect).toBe("allow");
+        path.join(os.tmpdir(), "unrelated-host-temp.txt"),
+      ]) {
+        const eventRead = event("read", [target]);
+        evaluatePermission(eventRead, policy);
+        expect(eventRead.effect).toBe("deny");
+      }
     } finally {
       f.cleanup();
-    }
-  });
-
-  test("does not follow a symlinked OpenCode temp root outside the temp base", () => {
-    const f = fixture();
-    const base = tempDir("osb-tool-tmp-");
-    const previous = process.env.TMPDIR;
-    try {
-      fs.symlinkSync("/", path.join(base, "opencode"));
-      process.env.TMPDIR = base;
-      const policy = createToolPolicy(f.layout, f.options, "linux");
-      expect(policy.readRoots).not.toContain("/");
-
-      const denied = event("read", [path.join(f.layout.hostHome, ".ssh", "id_rsa")]);
-      evaluatePermission(denied, policy);
-      expect(denied.effect).toBe("deny");
-
-      // A link back to the temp base must not widen reads to the whole base.
-      fs.rmSync(path.join(base, "opencode"));
-      fs.symlinkSync(base, path.join(base, "opencode"));
-      const sameBase = createToolPolicy(f.layout, f.options, "linux");
-      expect(sameBase.readRoots).not.toContain(base);
-      const sibling = event("read", [path.join(base, "sibling.txt")]);
-      evaluatePermission(sibling, sameBase);
-      expect(sibling.effect).toBe("deny");
-    } finally {
-      if (previous === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = previous;
-      f.cleanup();
-      fs.rmSync(base, { recursive: true, force: true });
     }
   });
 
@@ -508,6 +492,8 @@ describe("evaluatePermission", () => {
       hostHome: fs.realpathSync.native(os.homedir()),
       writablePaths: [],
       readablePaths: [file],
+      protectedPaths: [],
+      deniedPaths: [],
     };
     const options = parseOptions({ toolGuard: "enforce" }, workspace);
     const policy = createToolPolicy(
@@ -547,7 +533,7 @@ describe("evaluatePermission", () => {
     }
   });
 
-  test("allows OpenCode's retained tool-output directory only", () => {
+  test("denies retained tool-output reads by default", () => {
     const workspace = tempDir();
     const fakeHome = tempDir("osb-tool-home-");
     const data = path.join(fakeHome, ".local", "share");
@@ -560,16 +546,18 @@ describe("evaluatePermission", () => {
       hostHome: fakeHome,
       writablePaths: [],
       readablePaths: [],
+      protectedPaths: [],
+      deniedPaths: [],
     };
     const options = parseOptions({ toolGuard: "enforce" }, workspace);
     const previous = process.env.XDG_DATA_HOME;
     try {
       delete process.env.XDG_DATA_HOME;
-      const policy = createToolPolicy(layout, options, "linux");
+      const policy = createToolPolicy(layout, options, "darwin");
 
-      const allowed = event("read", [output]);
-      evaluatePermission(allowed, policy);
-      expect(allowed.effect).toBe("allow");
+      const denied = event("read", [output]);
+      evaluatePermission(denied, policy);
+      expect(denied.effect).toBe("deny");
 
       const sibling = event("read", [path.join(base, "auth.json")]);
       evaluatePermission(sibling, policy);
@@ -594,6 +582,8 @@ describe("evaluatePermission", () => {
       hostHome: fakeHome,
       writablePaths: [],
       readablePaths: [],
+      protectedPaths: [],
+      deniedPaths: [],
     };
     const options = parseOptions({ toolGuard: "enforce" }, workspace);
     const previous = process.env.XDG_DATA_HOME;
@@ -623,6 +613,8 @@ describe("evaluatePermission", () => {
       hostHome: fs.realpathSync.native(os.homedir()),
       writablePaths: [],
       readablePaths: [fs.realpathSync.native(path.join(root, "ro"))],
+      protectedPaths: [],
+      deniedPaths: [],
     };
     const options = parseOptions(
       { toolGuard: "enforce", readablePaths: [path.join(root, "ro")] },

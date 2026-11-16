@@ -70,6 +70,8 @@ describe("mountPlan", () => {
       hostHome: "/home/user",
       writablePaths: ["/shared"],
       readablePaths: ["/shared"],
+      protectedPaths: [],
+      deniedPaths: [],
     };
     expect(() => mountPlan(layout)).toThrow(/both writable and readable/);
   });

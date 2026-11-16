@@ -15,13 +15,15 @@
  */
 
 import { isShellTool } from "./app.ts";
-import { parseOptionsSafe } from "./options.ts";
+import { matchesUnsandboxed } from "./escape.ts";
 import { resolveCwd, resolveLayout } from "./paths.ts";
+import { logPolicy, resolveEffectiveOptions } from "./policy.ts";
 import { shellQuote } from "./quote.ts";
 import { createToolPolicy, guardToolInput, isGuardedTool } from "./tool-policy.ts";
 import { trace } from "./trace.ts";
 import type { SandboxLayout, SandboxOptions } from "./types.ts";
 import { prepareRuntime } from "./wrapper.ts";
+import { wslName } from "./wsl.ts";
 
 export interface V1PluginInput {
   directory?: unknown;
@@ -82,10 +84,8 @@ export async function createLegacyServer(
       : typeof input.worktree === "string"
         ? input.worktree
         : process.cwd();
-  const parsed = parseOptionsSafe(rawOptions, workspace);
-  for (const error of parsed.errors) {
-    console.error(`[opencode-sandbox] invalid option: ${error}`);
-  }
+  const parsed = resolveEffectiveOptions(rawOptions, workspace);
+  logPolicy(parsed);
   const options: SandboxOptions = parsed.options;
 
   let layout: SandboxLayout;
@@ -103,7 +103,10 @@ export async function createLegacyServer(
   }
 
   if (process.platform !== "linux" && process.platform !== "darwin") {
-    const reason = `unsupported platform ${process.platform}`;
+    const reason =
+      process.platform === "win32"
+        ? "unsupported platform win32; run OpenCode inside WSL2 (see README)"
+        : `unsupported platform ${process.platform}`;
     if (options.mode === "permissive") {
       console.warn(
         `[opencode-sandbox] ${reason}; mode=permissive, running shell commands unsandboxed`
@@ -135,15 +138,46 @@ export async function createLegacyServer(
     }
   }
   const prefix = `${shellQuote(prepared.runtime.wrapper)} -c `;
+  const wrappedCalls = new Map<string, string>();
+  const remember = (callID: string, command: string) => {
+    if (callID === "") return;
+    if (!wrappedCalls.has(callID) && wrappedCalls.size >= 10_000) {
+      const oldest = wrappedCalls.keys().next().value;
+      if (oldest !== undefined) wrappedCalls.delete(oldest);
+    }
+    wrappedCalls.set(callID, command);
+  };
   const hooks: V1Hooks = {
     "tool.execute.before": async (toolInput, output) => {
       if (isShellTool(toolInput.tool)) {
         const args = commandArgs(output);
         if (args.command === undefined || args.command === "") return;
-        if (args.command.startsWith(prefix)) return;
+        const previous = toolInput.callID === "" ? undefined : wrappedCalls.get(toolInput.callID);
+        // A genuine replay has both the same call ID and the same command.
+        // A call ID is not a capability: a fresh command under an old ID is
+        // wrapped (or refused when it claims to be a wrapper).
+        if (previous !== undefined && args.command === previous) return;
+        // V1 history records the wrapped command. An agent can copy that
+        // string and append a host command; never trust a caller-supplied
+        // "already wrapped" string.
+        if (args.command.startsWith(prefix)) {
+          throw new Error(
+            "[opencode-sandbox] refusing a command that claims to be a sandbox wrapper"
+          );
+        }
+        const unsandboxed = matchesUnsandboxed(args.command, options.unsandboxedCommands);
+        if (unsandboxed !== undefined) {
+          trace("unsandboxed-v1", {
+            patternIndex: options.unsandboxedCommands.indexOf(unsandboxed),
+          });
+          remember(toolInput.callID, args.command);
+          return;
+        }
         if (args.workdir !== undefined) resolveCwd(layout, args.workdir);
         const record = output.args as { command: string };
-        record.command = `${prefix}${shellQuote(args.command)}`;
+        const wrapped = `${prefix}${shellQuote(args.command)}`;
+        record.command = wrapped;
+        remember(toolInput.callID, wrapped);
         trace("sandboxed-v1", { tool: toolInput.tool, workdir: args.workdir });
         return;
       }
@@ -156,6 +190,7 @@ export async function createLegacyServer(
       }
     },
     dispose: async () => {
+      wrappedCalls.clear();
       prepared.runtime.dispose();
       trace("dispose-v1");
     },
@@ -173,11 +208,15 @@ export async function createLegacyServer(
       : policyError !== undefined
         ? "blocked"
         : "unguarded";
+  const wsl = wslName();
   console.log(
     `[opencode-sandbox] ready v1 (platform=${process.platform}, ` +
       `sandbox=${process.platform === "linux" ? "bwrap" : "seatbelt"}, ` +
       `network=${options.network}, mode=${options.mode}, toolGuard=${toolGuardLabel}, ` +
-      `webfetch=${webfetchLabel}, workspace=${layout.workspace})`
+      `webfetch=${webfetchLabel}, workspace=${layout.workspace}` +
+      `${wsl === undefined ? "" : `, wsl=${wsl}`}, ` +
+      `protected=${layout.protectedPaths.length}, denied=${layout.deniedPaths.length}, ` +
+      `unsandboxed=${options.unsandboxedCommands.length})`
   );
   trace("ready-v1", {
     platform: process.platform,
@@ -188,6 +227,9 @@ export async function createLegacyServer(
     webfetch: webfetchLabel,
     webfetchAllowlist: options.webfetchAllowlist.length,
     workspace: layout.workspace,
+    protectedPaths: layout.protectedPaths.length,
+    deniedPaths: layout.deniedPaths.length,
+    unsandboxedCommands: options.unsandboxedCommands.length,
   });
   return hooks;
 }

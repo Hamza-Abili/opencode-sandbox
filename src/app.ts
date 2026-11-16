@@ -6,6 +6,7 @@
  * timeout, permissions and session history keep the original values.
  */
 
+import { matchesUnsandboxed } from "./escape.ts";
 import { resolveCwd, resolveLayout } from "./paths.ts";
 import {
   createToolPolicy,
@@ -18,6 +19,7 @@ import {
 import { trace } from "./trace.ts";
 import type { SandboxLayout, SandboxOptions } from "./types.ts";
 import { prepareRuntime } from "./wrapper.ts";
+import { wslName } from "./wsl.ts";
 
 export interface ShellCreateEvent {
   command: string;
@@ -261,7 +263,9 @@ export async function createSandbox(ctx: V2Context, options: SandboxOptions): Pr
     return await unavailable(
       ctx,
       options,
-      `unsupported platform ${process.platform}`,
+      process.platform === "win32"
+        ? "unsupported platform win32; run OpenCode inside WSL2 (see README) or use a whole-process sandbox"
+        : `unsupported platform ${process.platform}`,
       options.toolGuard === "enforce" ? denyPolicyAction : undefined
     );
   }
@@ -325,6 +329,11 @@ export async function createSandbox(ctx: V2Context, options: SandboxOptions): Pr
 
   try {
     const registration = await ctx.shell.hook("create.before", (event) => {
+      const unsandboxed = matchesUnsandboxed(event.command, options.unsandboxedCommands);
+      if (unsandboxed !== undefined) {
+        trace("unsandboxed", { patternIndex: options.unsandboxedCommands.indexOf(unsandboxed) });
+        return;
+      }
       // Fail here, before OpenCode spawns anything, with a readable reason.
       // The wrapper validates the real cwd again at execution time.
       const cwd = resolveCwd(layout, event.cwd);
@@ -343,11 +352,15 @@ export async function createSandbox(ctx: V2Context, options: SandboxOptions): Pr
           : options.webfetchAllowlist.length > 0
             ? `allowlist(${options.webfetchAllowlist.length})`
             : "allow";
+    const wsl = wslName();
 
     console.log(
       `[opencode-sandbox] ready (platform=${platform}, sandbox=${platform === "linux" ? "bwrap" : "seatbelt"}, ` +
         `network=${options.network}, mode=${options.mode}, toolGuard=${toolGuard}, ` +
-        `webfetch=${webfetch}, workspace=${layout.workspace})`
+        `webfetch=${webfetch}, workspace=${layout.workspace}` +
+        `${wsl === undefined ? "" : `, wsl=${wsl}`}, ` +
+        `protected=${layout.protectedPaths.length}, denied=${layout.deniedPaths.length}, ` +
+        `unsandboxed=${options.unsandboxedCommands.length})`
     );
     trace("ready", {
       platform,
@@ -359,6 +372,10 @@ export async function createSandbox(ctx: V2Context, options: SandboxOptions): Pr
       webfetch: options.webfetch,
       webfetchAllowlist: options.webfetchAllowlist.length,
       workspace: layout.workspace,
+      wsl,
+      protectedPaths: layout.protectedPaths.length,
+      deniedPaths: layout.deniedPaths.length,
+      unsandboxedCommands: options.unsandboxedCommands.length,
     });
 
     return {
