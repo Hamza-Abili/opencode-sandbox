@@ -1,7 +1,7 @@
 {
   "name": "@hamzaabili/opencode-sandbox",
   "version": "0.3.0",
-  "description": "OpenCode V1 + V2 command sandbox: every shell command runs inside native bubblewrap (Linux) or Seatbelt (macOS) with a read-only system, a writable project, no ambient secrets and network denied by default. Trusted policy outside the workspace, protected OpenCode/Git config, a V2 in-process guard for file tools and webfetch. Fail-closed, zero runtime dependencies.",
+  "description": "OpenCode plugin (V1+V2): agent shell commands run in a native OS sandbox by default — bubblewrap on Linux, Seatbelt on macOS — with a read-only system, a writable project, cleared environment and network denied by default. Trusted policy outside the workspace, protected OpenCode/Git config, a V2 in-process guard for file tools and webfetch. V2 also covers the terminal shell; V1 covers the agent bash tool. Fail-closed in enforce mode, zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
   "author": "Hamza-Abili",
